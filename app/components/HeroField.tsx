@@ -137,9 +137,28 @@ export default function HeroField() {
     const drones: Drone[] = [];
     
     // Create different flight groups
-    const margin = 100;
+    const margin = 80;
     const usableWidth = canvas.width - margin * 2;
     const usableHeight = canvas.height - margin * 2;
+
+    // Spawn positions around the edges/corners
+    const spawnPositions = [
+      // Corners
+      { x: margin, y: margin },
+      { x: canvas.width - margin, y: margin },
+      { x: margin, y: canvas.height - margin },
+      { x: canvas.width - margin, y: canvas.height - margin },
+      // Edge midpoints
+      { x: canvas.width / 2, y: margin },
+      { x: canvas.width / 2, y: canvas.height - margin },
+      { x: margin, y: canvas.height / 2 },
+      { x: canvas.width - margin, y: canvas.height / 2 },
+      // Quarter points on edges
+      { x: canvas.width * 0.25, y: margin },
+      { x: canvas.width * 0.75, y: margin },
+      { x: canvas.width * 0.25, y: canvas.height - margin },
+      { x: canvas.width * 0.75, y: canvas.height - margin },
+    ];
 
     // 2 of each type in order
     const droneTypesList: DroneType[] = [
@@ -166,8 +185,10 @@ export default function HeroField() {
         flightMode = "orbit";
       }
 
-      const startX = margin + Math.random() * usableWidth;
-      const startY = margin + Math.random() * usableHeight;
+      // Use spawn positions from edges/corners
+      const spawnPos = spawnPositions[i % spawnPositions.length];
+      const startX = spawnPos.x + (Math.random() - 0.5) * 40;
+      const startY = spawnPos.y + (Math.random() - 0.5) * 40;
       
       const drone: Drone = {
         x: startX,
@@ -286,26 +307,42 @@ export default function HeroField() {
       let targetY = drone.y;
       let useMouseAttraction = false;
       
-      // Check for mouse interaction first
+      // Check for mouse interaction - only affect 2 closest drones
       if (mouseRef.current.active) {
-        const dx = mouseRef.current.x - drone.x;
-        const dy = mouseRef.current.y - drone.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        // Calculate distances of all drones to mouse
+        const droneDistances = dronesRef.current.map((d, i) => ({
+          index: i,
+          dist: Math.sqrt(
+            Math.pow(mouseRef.current.x - d.x, 2) + 
+            Math.pow(mouseRef.current.y - d.y, 2)
+          )
+        }));
         
-        // Strong attraction within range
-        if (dist < 300) {
-          useMouseAttraction = true;
-          const influence = (1 - dist / 300);
+        // Sort by distance and get the 2 closest
+        droneDistances.sort((a, b) => a.dist - b.dist);
+        const closestTwo = droneDistances.slice(0, 2).map(d => d.index);
+        
+        // Only interact if this drone is one of the 2 closest
+        if (closestTwo.includes(index)) {
+          const dx = mouseRef.current.x - drone.x;
+          const dy = mouseRef.current.y - drone.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
           
-          if (dist > 80) {
-            // Move towards cursor
-            targetX = drone.x + dx * influence * 0.5;
-            targetY = drone.y + dy * influence * 0.5;
-          } else {
-            // Orbit around cursor when very close
-            const orbitAngle = Math.atan2(dy, dx) + 0.02;
-            targetX = mouseRef.current.x - Math.cos(orbitAngle) * 100;
-            targetY = mouseRef.current.y - Math.sin(orbitAngle) * 100;
+          // Strong attraction within range
+          if (dist < 350) {
+            useMouseAttraction = true;
+            const influence = (1 - dist / 350);
+            
+            if (dist > 100) {
+              // Move towards cursor
+              targetX = drone.x + dx * influence * 0.6;
+              targetY = drone.y + dy * influence * 0.6;
+            } else {
+              // Orbit around cursor when very close
+              const orbitAngle = Math.atan2(dy, dx) + 0.025;
+              targetX = mouseRef.current.x - Math.cos(orbitAngle) * 120;
+              targetY = mouseRef.current.y - Math.sin(orbitAngle) * 120;
+            }
           }
         }
       }
@@ -384,17 +421,45 @@ export default function HeroField() {
       const dy = targetY - drone.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       
+      let desiredVx = 0;
+      let desiredVy = 0;
+      
       if (dist > 1) {
         // Normalize and apply speed
         const speed = drone.speed;
-        const desiredVx = (dx / dist) * speed;
-        const desiredVy = (dy / dist) * speed;
-        
-        // Smooth acceleration (different for different aircraft)
-        const accel = drone.type === "fixedwing" ? 0.02 : 0.04;
-        drone.vx += (desiredVx - drone.vx) * accel;
-        drone.vy += (desiredVy - drone.vy) * accel;
+        desiredVx = (dx / dist) * speed;
+        desiredVy = (dy / dist) * speed;
       }
+      
+      // Collision avoidance - much stronger and larger radius
+      const avoidanceRadius = 150;
+      const avoidanceStrength = 2.5;
+      let avoidX = 0;
+      let avoidY = 0;
+      
+      dronesRef.current.forEach((other, otherIndex) => {
+        if (otherIndex === index) return;
+        
+        const dx = drone.x - other.x;
+        const dy = drone.y - other.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist < avoidanceRadius && dist > 0) {
+          // Much stronger repulsion when closer - exponential falloff
+          const force = Math.pow(1 - dist / avoidanceRadius, 2) * avoidanceStrength;
+          avoidX += (dx / dist) * force;
+          avoidY += (dy / dist) * force;
+        }
+      });
+      
+      // Combine desired velocity with avoidance
+      desiredVx += avoidX;
+      desiredVy += avoidY;
+      
+      // Smooth acceleration (different for different aircraft)
+      const accel = drone.type === "fixedwing" ? 0.02 : 0.04;
+      drone.vx += (desiredVx - drone.vx) * accel;
+      drone.vy += (desiredVy - drone.vy) * accel;
 
       // Apply velocity
       drone.x += drone.vx;
