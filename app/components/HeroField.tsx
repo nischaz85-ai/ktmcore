@@ -38,6 +38,7 @@ interface Drone {
   surveyProgress?: number;
   tailRotorAngle?: number;
   propAngle?: number;
+  isWaiting?: boolean;
 }
 
 export default function HeroField() {
@@ -306,8 +307,11 @@ export default function HeroField() {
       let targetX = drone.x;
       let targetY = drone.y;
       let useMouseAttraction = false;
+      let shouldLand = false;
+      let shouldWait = false;
       
-      // Check for mouse interaction - only affect 2 closest drones
+      // Check for mouse interaction - only the CLOSEST drone lands at cursor
+      // The second closest waits nearby until first one leaves
       if (mouseRef.current.active) {
         // Calculate distances of all drones to mouse
         const droneDistances = dronesRef.current.map((d, i) => ({
@@ -318,32 +322,98 @@ export default function HeroField() {
           )
         }));
         
-        // Sort by distance and get the 2 closest
+        // Sort by distance
         droneDistances.sort((a, b) => a.dist - b.dist);
-        const closestTwo = droneDistances.slice(0, 2).map(d => d.index);
+        const closestIndex = droneDistances[0].index;
+        const secondClosestIndex = droneDistances[1].index;
+        const closestDist = droneDistances[0].dist;
         
-        // Only interact if this drone is one of the 2 closest
-        if (closestTwo.includes(index)) {
+        // Check if closest drone has landed (is at the waypoint)
+        const closestDrone = dronesRef.current[closestIndex];
+        const closestHasLanded = closestDrone.isWaiting && closestDist < 30;
+        
+        // Only the CLOSEST drone goes to and lands at the cursor
+        if (index === closestIndex) {
           const dx = mouseRef.current.x - drone.x;
           const dy = mouseRef.current.y - drone.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
           
-          // Strong attraction within range
-          if (dist < 350) {
+          if (dist < 500) {
             useMouseAttraction = true;
-            const influence = (1 - dist / 350);
             
-            if (dist > 100) {
-              // Move towards cursor
-              targetX = drone.x + dx * influence * 0.6;
-              targetY = drone.y + dy * influence * 0.6;
-            } else {
-              // Orbit around cursor when very close
-              const orbitAngle = Math.atan2(dy, dx) + 0.025;
-              targetX = mouseRef.current.x - Math.cos(orbitAngle) * 120;
-              targetY = mouseRef.current.y - Math.sin(orbitAngle) * 120;
+            // Move towards cursor (the waypoint)
+            targetX = mouseRef.current.x;
+            targetY = mouseRef.current.y;
+            
+            // When close enough, land
+            if (dist < 25) {
+              shouldLand = true;
+              drone.isWaiting = true;
+              // Snap to exact position when landed
+              targetX = mouseRef.current.x;
+              targetY = mouseRef.current.y;
             }
           }
+        }
+        // Second closest drone waits, then approaches when first leaves
+        else if (index === secondClosestIndex) {
+          const dx = mouseRef.current.x - drone.x;
+          const dy = mouseRef.current.y - drone.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dist < 600) {
+            useMouseAttraction = true;
+            
+            // If closest drone has NOT landed yet, wait at distance
+            if (!closestHasLanded) {
+              shouldWait = true;
+              drone.isWaiting = true;
+              
+              // Calculate wait position - offset from cursor
+              const waitAngle = Math.atan2(drone.y - mouseRef.current.y, drone.x - mouseRef.current.x);
+              const waitDist = 150;
+              const waitX = mouseRef.current.x + Math.cos(waitAngle) * waitDist;
+              const waitY = mouseRef.current.y + Math.sin(waitAngle) * waitDist;
+              
+              targetX = waitX;
+              targetY = waitY;
+            } 
+            // If closest drone left (moved away), second can now approach and land
+            else {
+              // Move towards cursor to land
+              targetX = mouseRef.current.x;
+              targetY = mouseRef.current.y;
+              
+              if (dist < 25) {
+                shouldLand = true;
+                drone.isWaiting = true;
+              } else {
+                drone.isWaiting = false;
+              }
+            }
+          }
+        } else {
+          drone.isWaiting = false;
+        }
+        
+        // Handle altitude based on state
+        if (shouldLand) {
+          // Landing - lower altitude significantly
+          drone.altitude = Math.max(0.4, drone.altitude - 0.015);
+        } else if (shouldWait) {
+          // Waiting - hover at medium-low altitude
+          drone.altitude = Math.max(0.55, drone.altitude - 0.008);
+        } else if (useMouseAttraction) {
+          // Approaching - normal altitude
+          if (drone.altitude < 0.8) {
+            drone.altitude = Math.min(0.9, drone.altitude + 0.01);
+          }
+        }
+      } else {
+        // No mouse - restore altitude for all and clear waiting state
+        drone.isWaiting = false;
+        if (drone.altitude < 0.8) {
+          drone.altitude = Math.min(0.8 + Math.random() * 0.2, drone.altitude + 0.008);
         }
       }
       
@@ -487,13 +557,14 @@ export default function HeroField() {
       if (drone.y < boundaryMargin) drone.vy += 0.05;
       if (drone.y > canvas.height - boundaryMargin) drone.vy -= 0.05;
 
-      // Update rotors
-      drone.rotorAngle += drone.rotorSpeed * (0.8 + currentSpeed * 0.5);
+      // Update rotors - slower when waiting/landed
+      const rotorMultiplier = drone.isWaiting ? 0.3 : (0.8 + currentSpeed * 0.5);
+      drone.rotorAngle += drone.rotorSpeed * rotorMultiplier;
       if (drone.tailRotorAngle !== undefined) {
-        drone.tailRotorAngle += drone.rotorSpeed * 1.2;
+        drone.tailRotorAngle += drone.rotorSpeed * (drone.isWaiting ? 0.4 : 1.2);
       }
       if (drone.propAngle !== undefined) {
-        drone.propAngle += drone.rotorSpeed * (1 + currentSpeed);
+        drone.propAngle += drone.rotorSpeed * (drone.isWaiting ? 0.3 : (1 + currentSpeed));
       }
     };
 
