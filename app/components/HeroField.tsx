@@ -84,8 +84,6 @@ export default function HeroField() {
       glow: "#5ba3b8"
     };
 
-    const droneTypes: DroneType[] = ["quadcopter", "quadcopter", "quadcopter", "hexacopter", "hexacopter", "tricopter", "fixedwing", "fixedwing", "vtol", "helicopter"];
-
     // Generate patrol waypoints (rectangular or circular paths)
     const generatePatrolWaypoints = (cx: number, cy: number, size: number): Waypoint[] => {
       const pattern = Math.random();
@@ -643,7 +641,7 @@ export default function HeroField() {
       ctx.fill();
     };
 
-    const drawHexacopter = (drone: Drone, t: number) => {
+    const drawHexacopter = (drone: Drone) => {
       const { size, rotorAngle } = drone;
       const armLength = size * 0.8;
 
@@ -1027,7 +1025,7 @@ export default function HeroField() {
 
       switch (drone.type) {
         case "quadcopter": drawQuadcopter(drone, t); break;
-        case "hexacopter": drawHexacopter(drone, t); break;
+        case "hexacopter": drawHexacopter(drone); break;
         case "tricopter": drawTricopter(drone, t); break;
         case "helicopter": drawHelicopter(drone, t); break;
         case "fixedwing": drawFixedWing(drone, t); break;

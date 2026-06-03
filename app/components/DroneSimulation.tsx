@@ -55,6 +55,52 @@ const LIDAR_RANGE = 120;
 const SAFE_DISTANCE = 40;
 const DRONE_RADIUS = 12;
 
+const hasLineOfSight = (a: Vec2, b: Vec2, obstacles: Obstacle[]): boolean => {
+  const steps = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 5);
+
+  for (let i = 0; i <= steps; i++) {
+    const t = steps === 0 ? 0 : i / steps;
+    const px = a.x + (b.x - a.x) * t;
+    const py = a.y + (b.y - a.y) * t;
+
+    for (const obs of obstacles) {
+      if (
+        px > obs.x - DRONE_RADIUS &&
+        px < obs.x + obs.width + DRONE_RADIUS &&
+        py > obs.y - DRONE_RADIUS &&
+        py < obs.y + obs.height + DRONE_RADIUS
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+};
+
+const smoothPath = (path: Vec2[], obstacles: Obstacle[]): Vec2[] => {
+  if (path.length <= 2) return path;
+
+  const smoothed: Vec2[] = [path[0]];
+  let current = 0;
+
+  while (current < path.length - 1) {
+    let furthest = current + 1;
+
+    for (let i = path.length - 1; i > current + 1; i--) {
+      if (hasLineOfSight(path[current], path[i], obstacles)) {
+        furthest = i;
+        break;
+      }
+    }
+
+    smoothed.push(path[furthest]);
+    current = furthest;
+  }
+
+  return smoothed;
+};
+
 export default function DroneSimulation() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [speed, setSpeed] = useState(0.6);
@@ -195,50 +241,6 @@ export default function DroneSimulation() {
 
     return { path: [], nodesExplored };
   }, []);
-
-  // Path smoothing using line-of-sight checks
-  const smoothPath = (path: Vec2[], obstacles: Obstacle[]): Vec2[] => {
-    if (path.length <= 2) return path;
-    
-    const smoothed: Vec2[] = [path[0]];
-    let current = 0;
-    
-    while (current < path.length - 1) {
-      let furthest = current + 1;
-      
-      for (let i = path.length - 1; i > current + 1; i--) {
-        if (hasLineOfSight(path[current], path[i], obstacles)) {
-          furthest = i;
-          break;
-        }
-      }
-      
-      smoothed.push(path[furthest]);
-      current = furthest;
-    }
-    
-    return smoothed;
-  };
-
-  // Line of sight check
-  const hasLineOfSight = (a: Vec2, b: Vec2, obstacles: Obstacle[]): boolean => {
-    const steps = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 5);
-    
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const px = a.x + (b.x - a.x) * t;
-      const py = a.y + (b.y - a.y) * t;
-      
-      for (const obs of obstacles) {
-        if (px > obs.x - DRONE_RADIUS && px < obs.x + obs.width + DRONE_RADIUS &&
-            py > obs.y - DRONE_RADIUS && py < obs.y + obs.height + DRONE_RADIUS) {
-          return false;
-        }
-      }
-    }
-    
-    return true;
-  };
 
   // RRT (Rapidly-exploring Random Tree) Implementation
   const rrt = useCallback((start: Vec2, goal: Vec2, obstacles: Obstacle[], canvasWidth: number, canvasHeight: number): { path: Vec2[]; tree: { from: Vec2; to: Vec2 }[]; nodesExplored: number } => {
@@ -754,8 +756,6 @@ export default function DroneSimulation() {
     canvas.addEventListener("click", onClick);
 
     let animId: number;
-    let lastTime = 0;
-
     const drawGrid = () => {
       ctx.strokeStyle = "#1a2634";
       ctx.lineWidth = 1;
@@ -1424,9 +1424,6 @@ export default function DroneSimulation() {
     };
 
     const animate = (currentTime: number) => {
-      const deltaTime = (currentTime - lastTime) / 1000;
-      lastTime = currentTime;
-      
       const drone = state.drone!;
       
       // Clear
@@ -1442,8 +1439,8 @@ export default function DroneSimulation() {
           const velocity = obs.velocity; // Store reference for TypeScript
           
           // Predict next position
-          let nextX = obs.x + velocity.x;
-          let nextY = obs.y + velocity.y;
+          const nextX = obs.x + velocity.x;
+          const nextY = obs.y + velocity.y;
           
           // Check collision with static obstacles
           let collisionX = false;

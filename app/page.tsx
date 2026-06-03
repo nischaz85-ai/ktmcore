@@ -1,5 +1,5 @@
-import Image from "next/image";
 import DroneSimulation from "./components/DroneSimulation";
+import DroneSimulation3D from "./components/DroneSimulation3D";
 import HeroField from "./components/HeroField";
 import Navbar from "./components/Navbar";
 
@@ -22,7 +22,7 @@ export default function Home() {
           <HeroField />
 
           {/* Soft vignette for depth */}
-          <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/20 to-black/60 z-5" />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/20 to-black/60" />
 
           {/* Content */}
           <div className="relative z-10 max-w-5xl text-center backdrop-blur-sm">
@@ -38,19 +38,24 @@ export default function Home() {
             </p>
 
             <div className="flex justify-center gap-6">
-              <button className="px-8 py-3 bg-white text-black rounded-lg font-medium
+              <a href="#work" className="px-8 py-3 bg-white text-black rounded-lg font-medium
                 hover:bg-gray-200 transition">
                 View Projects
-              </button>
+              </a>
 
-              <button className="px-8 py-3 border border-cyan-400 text-cyan-300 rounded-lg
+              <a href="#contact" className="px-8 py-3 border border-cyan-400 text-cyan-300 rounded-lg
                 hover:bg-cyan-400/10 transition">
                 Contact
-              </button>
+              </a>
             </div>
 
           </div>
         </section>
+
+      {/* ================= WEBGL EXPERIENCE ================= */}
+      <section className="relative min-h-screen overflow-hidden bg-black">
+        <DroneSimulation3D />
+      </section>
 
 
 
@@ -58,7 +63,7 @@ export default function Home() {
       <div className="h-px bg-gray-800 max-w-6xl mx-auto" />
 
       {/* ================= WHAT WE BUILD ================= */}
-      <section className="py-24 px-6">
+      <section id="work" className="py-24 px-6">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-3xl font-semibold mb-12 text-center">
             What We Build
@@ -82,7 +87,7 @@ export default function Home() {
       </section>
 
       {/* ================= TECHNOLOGY STACK ================= */}
-      <section className="py-24 px-6 bg-gray-950">
+      <section id="tech" className="py-24 px-6 bg-gray-950">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-3xl font-semibold mb-12 text-center">
             Technology Focus
@@ -98,8 +103,8 @@ export default function Home() {
       </section>
 
       {/* ================= INTERACTIVE SIMULATION ================= */}
-      <section className="py-24 px-6">
-        <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-12 items-center">
+      <section id="simulation" className="py-24 px-6">
+          <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-12 items-center">
           <div>
             <h2 className="text-3xl font-semibold mb-6">
               Interactive Autonomous Systems
@@ -111,7 +116,9 @@ export default function Home() {
             </p>
           </div>
 
-          <DroneSimulation />
+          <div>
+            <DroneSimulation />
+          </div>
         </div>
       </section>
 
@@ -131,10 +138,10 @@ export default function Home() {
       </section>
 
       {/* ================= CONTACT CTA ================= */}
-      <section className="py-24 px-6">
+      <section id="contact" className="py-24 px-6">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-3xl font-semibold mb-6">
-            Let’s Build What’s Next
+            Let&apos;s Build What&apos;s Next
           </h2>
           <p className="text-gray-400 mb-10">
             Research collaboration, consulting, or product development.
@@ -147,7 +154,7 @@ export default function Home() {
 
       {/* ================= FOOTER ================= */}
       <footer className="py-10 border-t border-gray-800 text-center text-gray-500">
-        © {new Date().getFullYear()} KTM Core. All rights reserved.
+        &copy; {new Date().getFullYear()} KTM Core. All rights reserved.
       </footer>
     </main>
   );
