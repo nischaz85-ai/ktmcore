@@ -6,6 +6,7 @@ import * as THREE from "three";
 const SIDE_ROAD_Z = [-128, -76, -34, 31, 84, 132];
 const ROAD_SURFACE_Y = 0.04;
 const VEHICLE_CLEARANCE = 0.015;
+const ROVER_LANDING_PAD_LOCAL = new THREE.Vector3(0, 1.45, 1.22);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,13 +26,22 @@ interface TrafficVehicle {
   max: number;
   direction: 1 | -1;
   verticalVelocity: number;
+  velocity: THREE.Vector3;
 }
 
 interface DroneRig {
   group: THREE.Group;
   bladePairs: [THREE.Mesh, THREE.Mesh][];
   navLightMats: THREE.MeshStandardMaterial[];
-  role: "SCOUT" | "RELAY" | "GUARD";
+  role: "SCOUT" | "RELAY" | "GUARD" | "LOGISTICS";
+  logisticState: "PATROL" | "APPROACH" | "ALIGN" | "DOCK" | "DEPART";
+  logisticTargetVehicleIndex: number;
+  dockTimer: number;
+  isDocked: boolean;
+  hasTargetLock: boolean;
+  trackedDeck: THREE.Vector3;
+  trackedDeckVelocity: THREE.Vector3;
+  departTarget: THREE.Vector3;
   phase: number;
   radius: number;
   speed: number;
@@ -42,6 +52,22 @@ interface HudState {
   speed: number;
   beams: number;
   nearest: number;
+}
+
+interface SimulationControls {
+  paused: boolean;
+  simSpeed: number;
+  roverPower: number;
+  roverMaxSpeed: number;
+  roverSteering: number;
+  trafficEnabled: boolean;
+  logisticsEnabled: boolean;
+  cameraMode: "CHASE" | "TOP" | "ORBIT";
+}
+
+interface SimulationCommands {
+  resetRover: boolean;
+  reassignMissions: boolean;
 }
 
 // ── Material helpers ──────────────────────────────────────────────────────────
@@ -322,6 +348,29 @@ function createRover(): { rover: THREE.Group; wheels: THREE.Mesh[] } {
   const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.9, 8), stdMat(0x8090a8, 0.5, 0.6));
   ant.position.set(0.62, 2.04, -0.38); g.add(ant);
 
+  const padBase = new THREE.Mesh(new THREE.CylinderGeometry(0.78, 0.86, 0.08, 48), armor);
+  padBase.position.set(0, 1.16, 1.22);
+  padBase.castShadow = true;
+  g.add(padBase);
+
+  const padRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.68, 0.025, 8, 48),
+    emissiveMat(0x66ffcc, 0x66ffcc, 1.8)
+  );
+  padRing.position.set(0, 1.22, 1.22);
+  padRing.rotation.x = Math.PI / 2;
+  g.add(padRing);
+
+  const padCross = new THREE.Group();
+  ([0, Math.PI / 2] as number[]).forEach((rot) => {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.018, 0.09), emissiveMat(0x00c8ff, 0x00c8ff, 1.25));
+    stripe.position.y = 0.02;
+    stripe.rotation.y = rot;
+    padCross.add(stripe);
+  });
+  padCross.position.set(0, 1.25, 1.22);
+  g.add(padCross);
+
   ([-0.72, 0.72] as number[]).forEach(x => {
     const hl = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.05), emissiveMat(0xfff4d0, 0xfff4d0, 4));
     hl.position.set(x, 0.88, -2.34); g.add(hl);
@@ -351,7 +400,7 @@ function createRover(): { rover: THREE.Group; wheels: THREE.Mesh[] } {
 
 // ── Hexacopter Drone ──────────────────────────────────────────────────────────
 
-function createDrone(role: "SCOUT" | "RELAY" | "GUARD"): {
+function createDrone(role: DroneRig["role"]): {
   group: THREE.Group;
   bladePairs: [THREE.Mesh, THREE.Mesh][];
   navLightMats: THREE.MeshStandardMaterial[];
@@ -374,7 +423,7 @@ function createDrone(role: "SCOUT" | "RELAY" | "GUARD"): {
   const lens = new THREE.Mesh(new THREE.CircleGeometry(0.055, 12), stdMat(0x000810, 0.1, 0.1));
   lens.position.set(0, -0.28, 0.09); lens.rotation.x = -0.45; g.add(lens);
 
-  const roleColor = role === "SCOUT" ? 0x00c8ff : role === "RELAY" ? 0xffaa00 : 0xff2266;
+  const roleColor = role === "SCOUT" ? 0x00c8ff : role === "RELAY" ? 0xffaa00 : role === "GUARD" ? 0xff2266 : 0x66ffcc;
   const band = new THREE.Mesh(new THREE.TorusGeometry(0.43, 0.028, 8, 32), emissiveMat(roleColor, roleColor, 1.0));
   band.rotation.x = Math.PI / 2; g.add(band);
 
@@ -617,21 +666,170 @@ const panel: React.CSSProperties = {
   pointerEvents: "none",
 };
 
-function HUD({ speed, beams, nearest }: HudState) {
+function HUD({
+  speed,
+  beams,
+  nearest,
+  controls,
+  onControlsChange,
+  onResetRover,
+  onReassignMissions,
+}: HudState & {
+  controls: SimulationControls;
+  onControlsChange: (controls: SimulationControls) => void;
+  onResetRover: () => void;
+  onReassignMissions: () => void;
+}) {
   const nearColor = nearest < 7 ? "#ff3333" : nearest < 14 ? "#ff8844" : "#00ff88";
+  const updateControls = (patch: Partial<SimulationControls>) => onControlsChange({ ...controls, ...patch });
+  const buttonStyle: React.CSSProperties = {
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(0,220,255,0.34)",
+    background: "rgba(0,90,130,0.2)",
+    color: "#dffcff",
+    borderRadius: 6,
+    padding: "7px 9px",
+    fontFamily: "'Courier New', monospace",
+    fontSize: 11,
+    cursor: "pointer",
+  };
+  const activeButtonStyle: React.CSSProperties = {
+    ...buttonStyle,
+    background: "rgba(0,220,255,0.26)",
+    borderColor: "rgba(102,255,204,0.62)",
+    color: "#ffffff",
+  };
+
   return (
-    <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+    <div style={{ position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none" }}>
       {/* Status */}
-      <div style={{ ...panel, top: 16, left: 16, minWidth: 200 }}>
+      <div style={{ ...panel, top: 76, left: 16, minWidth: 200 }}>
         <div style={{ fontSize: 10, letterSpacing: 3, opacity: 0.55, marginBottom: 6 }}>
           AUTONOMOUS SYSTEMS DEMO
         </div>
         <div>Speed: <span style={{ color: "#fff" }}>{Math.abs(speed).toFixed(1)} m/s</span></div>
-        <div>Drones Active: <span style={{ color: "#fff" }}>7</span></div>
+        <div>Drones Active: <span style={{ color: "#fff" }}>20</span></div>
         <div>Scan Beams: <span style={{ color: "#00ff88" }}>{beams}</span></div>
         <div>Nearest Object: <span style={{ color: nearColor }}>
           {nearest < 99 ? `${nearest.toFixed(1)} m` : "— m"}
         </span></div>
+      </div>
+
+      {/* Simulator */}
+      <div style={{ ...panel, top: 76, right: 16, width: 265, pointerEvents: "auto" }}>
+        <div style={{ fontSize: 10, letterSpacing: 3, opacity: 0.55, marginBottom: 8 }}>
+          SIMULATION
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+          <button
+            type="button"
+            style={controls.paused ? buttonStyle : activeButtonStyle}
+            onClick={() => updateControls({ paused: !controls.paused })}
+          >
+            {controls.paused ? "Run" : "Pause"}
+          </button>
+          <button type="button" style={buttonStyle} onClick={onResetRover}>
+            Reset Rover
+          </button>
+          <button
+            type="button"
+            style={controls.trafficEnabled ? activeButtonStyle : buttonStyle}
+            onClick={() => updateControls({ trafficEnabled: !controls.trafficEnabled })}
+          >
+            Traffic
+          </button>
+          <button
+            type="button"
+            style={controls.logisticsEnabled ? activeButtonStyle : buttonStyle}
+            onClick={() => updateControls({ logisticsEnabled: !controls.logisticsEnabled })}
+          >
+            Logistics
+          </button>
+        </div>
+        <label style={{ display: "block", color: "#9befff", marginBottom: 8 }}>
+          <span style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span>Time Scale</span>
+            <span style={{ color: "#fff" }}>{controls.simSpeed.toFixed(1)}x</span>
+          </span>
+          <input
+            aria-label="Simulation time scale"
+            type="range"
+            min="0.3"
+            max="1.6"
+            step="0.1"
+            value={controls.simSpeed}
+            onChange={(event) => updateControls({ simSpeed: Number(event.target.value) })}
+            style={{ width: "100%" }}
+          />
+        </label>
+        <label style={{ display: "block", color: "#9befff", marginBottom: 8 }}>
+          <span style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span>Rover Power</span>
+            <span style={{ color: "#fff" }}>{controls.roverPower.toFixed(1)}x</span>
+          </span>
+          <input
+            aria-label="Rover power"
+            type="range"
+            min="0.4"
+            max="1.8"
+            step="0.1"
+            value={controls.roverPower}
+            onChange={(event) => updateControls({ roverPower: Number(event.target.value) })}
+            style={{ width: "100%" }}
+          />
+        </label>
+        <label style={{ display: "block", color: "#9befff", marginBottom: 8 }}>
+          <span style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span>Rover Speed Cap</span>
+            <span style={{ color: "#fff" }}>{controls.roverMaxSpeed.toFixed(0)} m/s</span>
+          </span>
+          <input
+            aria-label="Rover speed cap"
+            type="range"
+            min="8"
+            max="32"
+            step="1"
+            value={controls.roverMaxSpeed}
+            onChange={(event) => updateControls({ roverMaxSpeed: Number(event.target.value) })}
+            style={{ width: "100%" }}
+          />
+        </label>
+        <label style={{ display: "block", color: "#9befff", marginBottom: 8 }}>
+          <span style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span>Steering</span>
+            <span style={{ color: "#fff" }}>{controls.roverSteering.toFixed(1)}x</span>
+          </span>
+          <input
+            aria-label="Rover steering"
+            type="range"
+            min="0.5"
+            max="1.8"
+            step="0.1"
+            value={controls.roverSteering}
+            onChange={(event) => updateControls({ roverSteering: Number(event.target.value) })}
+            style={{ width: "100%" }}
+          />
+        </label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginTop: 10 }}>
+          {(["CHASE", "TOP", "ORBIT"] as SimulationControls["cameraMode"][]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              style={controls.cameraMode === mode ? activeButtonStyle : buttonStyle}
+              onClick={() => updateControls({ cameraMode: mode })}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          style={{ ...buttonStyle, width: "100%", marginTop: 8 }}
+          onClick={onReassignMissions}
+        >
+          New Drone Missions
+        </button>
       </div>
 
       {/* Controls */}
@@ -646,7 +844,7 @@ function HUD({ speed, beams, nearest }: HudState) {
       {/* Legend */}
       <div style={{ ...panel, bottom: 16, right: 16, fontSize: 11, lineHeight: 1.9 }}>
         <div style={{ fontSize: 10, letterSpacing: 3, opacity: 0.55, marginBottom: 4 }}>DRONE ROLES</div>
-        {([ ["#00c8ff","SCOUT","Rover escort"], ["#ffaa00","RELAY","Grid patrol"], ["#ff2266","GUARD","Zone coverage"] ] as [string,string,string][]).map(([color, role, desc]) => (
+        {([ ["#00c8ff","SCOUT","Rover escort"], ["#ffaa00","RELAY","Grid patrol"], ["#ff2266","GUARD","Zone coverage"], ["#66ffcc","LOGISTICS","Vehicle dock cycle"] ] as [string,string,string][]).map(([color, role, desc]) => (
           <div key={role}>
             <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: color, marginRight: 6, verticalAlign: "middle" }} />
             {role} — {desc}
@@ -669,6 +867,22 @@ function HUD({ speed, beams, nearest }: HudState) {
 export default function DroneSimulation3D() {
   const mountRef = useRef<HTMLDivElement>(null);
   const [hud, setHud] = useState<HudState>({ speed: 0, beams: 0, nearest: 99 });
+  const [controls, setControls] = useState<SimulationControls>({
+    paused: false,
+    simSpeed: 0.8,
+    roverPower: 1,
+    roverMaxSpeed: 20,
+    roverSteering: 1,
+    trafficEnabled: true,
+    logisticsEnabled: true,
+    cameraMode: "CHASE",
+  });
+  const controlsRef = useRef<SimulationControls>(controls);
+  const commandsRef = useRef<SimulationCommands>({ resetRover: false, reassignMissions: false });
+
+  useEffect(() => {
+    controlsRef.current = controls;
+  }, [controls]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -689,6 +903,11 @@ export default function DroneSimulation3D() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.inset = "0";
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    renderer.domElement.style.zIndex = "0";
     // Canvas must fill the mount div — set style before appending
     mount.appendChild(renderer.domElement);
 
@@ -840,6 +1059,7 @@ export default function DroneSimulation3D() {
         speed: 5.5 + (index % 4) * 1.4,
         direction: index % 2 === 0 ? 1 : -1,
         verticalVelocity: 0,
+        velocity: new THREE.Vector3(),
       });
     });
 
@@ -880,20 +1100,58 @@ export default function DroneSimulation3D() {
     scene.add(rover);
 
     // Drones
-    const roles: Array<"SCOUT" | "RELAY" | "GUARD"> = ["SCOUT","RELAY","GUARD","RELAY","GUARD","SCOUT","RELAY"];
+    const roles: DroneRig["role"][] = Array.from({ length: 20 }, (_, i) => {
+      if (i < 12) return "LOGISTICS";
+      if (i % 4 === 0) return "SCOUT";
+      if (i % 3 === 0) return "GUARD";
+      return "RELAY";
+    });
     const drones: DroneRig[] = roles.map((role, i) => {
       const { group, bladePairs, navLightMats } = createDrone(role);
       const rig: DroneRig = {
         group, bladePairs, navLightMats, role,
+        logisticState: "PATROL",
+        logisticTargetVehicleIndex: -1,
+        dockTimer: 0,
+        isDocked: false,
+        hasTargetLock: false,
+        trackedDeck: new THREE.Vector3(),
+        trackedDeckVelocity: new THREE.Vector3(),
+        departTarget: new THREE.Vector3(),
         phase: (i / roles.length) * Math.PI * 2,
-        radius: 30 + i * 13,
-        speed: 0.3 + i * 0.07,
-        altitude: 4.5 + (i % 3) * 1.4,
+        radius: 24 + (i % 10) * 10,
+        speed: 0.22 + (i % 8) * 0.035,
+        altitude: 5.2 + (i % 5) * 1.05,
       };
-      group.position.set(Math.sin(rig.phase) * rig.radius, rig.altitude, Math.cos(rig.phase) * rig.radius);
+      group.position.set(Math.sin(rig.phase) * rig.radius, surfaceHeight(0, 0) + rig.altitude, Math.cos(rig.phase) * rig.radius);
       scene.add(group);
       return rig;
     });
+    const getVehicleYaw = (vehicle: TrafficVehicle) => {
+      if (vehicle.axis === "x") return vehicle.direction > 0 ? Math.PI / 2 : -Math.PI / 2;
+      return vehicle.direction > 0 ? 0 : Math.PI;
+    };
+    const assignLogisticsMission = (droneIndex: number) => {
+      if (droneIndex < 0) return;
+      const drone = drones[droneIndex];
+      const targetPattern = [-1, ...trafficVehicles.map((_, targetIndex) => targetIndex)];
+      drone.logisticTargetVehicleIndex = targetPattern[droneIndex % targetPattern.length];
+      drone.logisticState = "APPROACH";
+      drone.dockTimer = 0;
+      drone.isDocked = false;
+      drone.hasTargetLock = false;
+      drone.trackedDeckVelocity.set(0, 0, 0);
+    };
+    drones.forEach((drone, index) => {
+      if (drone.role === "LOGISTICS") assignLogisticsMission(index);
+    });
+    const firstRoverDrone = drones.find((drone) => drone.role === "LOGISTICS" && drone.logisticTargetVehicleIndex === -1);
+    if (firstRoverDrone) {
+      firstRoverDrone.group.position.copy(rover.localToWorld(ROVER_LANDING_PAD_LOCAL.clone())).add(new THREE.Vector3(0, 6.2, -9));
+      firstRoverDrone.logisticState = "ALIGN";
+      firstRoverDrone.dockTimer = 0;
+      firstRoverDrone.isDocked = false;
+    }
 
     // ── Input ────────────────────────────────────────────────────────────────
     const keys = new Set<string>();
@@ -922,7 +1180,74 @@ export default function DroneSimulation3D() {
     const clock = new THREE.Clock();
     const camTarget = new THREE.Vector3();
     const camOff    = new THREE.Vector3();
-    const placeTrafficVehicle = (vehicle: TrafficVehicle, index: number, t: number, dt: number) => {
+    const roverVelocity = new THREE.Vector3();
+    const previousRoverPosition = new THREE.Vector3();
+    const moveDroneToward = (drone: DroneRig, target: THREE.Vector3, maxSpeed: number, dt: number) => {
+      const delta = target.clone().sub(drone.group.position);
+      const distance = delta.length();
+      const step = maxSpeed * dt;
+
+      if (distance <= step) {
+        drone.group.position.copy(target);
+      } else if (distance > 0.001) {
+        drone.group.position.addScaledVector(delta, step / distance);
+      }
+    };
+    const moveDroneLandingAxis = (
+      drone: DroneRig,
+      target: THREE.Vector3,
+      horizontalSpeed: number,
+      verticalSpeed: number,
+      dt: number
+    ) => {
+      const dx = target.x - drone.group.position.x;
+      const dz = target.z - drone.group.position.z;
+      const horizontalDistance = Math.hypot(dx, dz);
+      const horizontalStep = horizontalSpeed * dt;
+
+      if (horizontalDistance <= horizontalStep) {
+        drone.group.position.x = target.x;
+        drone.group.position.z = target.z;
+      } else if (horizontalDistance > 0.001) {
+        drone.group.position.x += (dx / horizontalDistance) * horizontalStep;
+        drone.group.position.z += (dz / horizontalDistance) * horizontalStep;
+      }
+
+      const dy = target.y - drone.group.position.y;
+      drone.group.position.y += THREE.MathUtils.clamp(dy, -verticalSpeed * dt, verticalSpeed * dt);
+    };
+    const setDroneLevelHeading = (drone: DroneRig, target: THREE.Vector3, dt: number) => {
+      const dx = target.x - drone.group.position.x;
+      const dz = target.z - drone.group.position.z;
+      if (Math.hypot(dx, dz) > 0.05) {
+        const desiredYaw = Math.atan2(dx, dz);
+        const yawDelta = THREE.MathUtils.euclideanModulo(desiredYaw - drone.group.rotation.y + Math.PI, Math.PI * 2) - Math.PI;
+        drone.group.rotation.y += yawDelta * THREE.MathUtils.clamp(dt * 7, 0, 1);
+      }
+
+      drone.group.rotation.x = THREE.MathUtils.lerp(drone.group.rotation.x, 0, THREE.MathUtils.clamp(dt * 8, 0, 1));
+      drone.group.rotation.z = THREE.MathUtils.lerp(drone.group.rotation.z, 0, THREE.MathUtils.clamp(dt * 8, 0, 1));
+    };
+    const updateDeckTracker = (drone: DroneRig, measuredDeck: THREE.Vector3, measuredVelocity: THREE.Vector3, dt: number) => {
+      if (!drone.hasTargetLock) {
+        drone.trackedDeck.copy(measuredDeck);
+        drone.trackedDeckVelocity.copy(measuredVelocity);
+        drone.hasTargetLock = true;
+        return;
+      }
+
+      const predicted = drone.trackedDeck.clone().addScaledVector(drone.trackedDeckVelocity, dt);
+      const residual = measuredDeck.clone().sub(predicted);
+      const alpha = 0.72;
+      const beta = 0.38;
+
+      drone.trackedDeck.copy(predicted).addScaledVector(residual, alpha);
+      drone.trackedDeckVelocity
+        .addScaledVector(residual, beta / Math.max(dt, 0.001))
+        .lerp(measuredVelocity, 0.18);
+    };
+    const placeTrafficVehicle = (vehicle: TrafficVehicle, index: number, t: number, dt: number, updateVelocity = true) => {
+      const previousPosition = vehicle.group.position.clone();
       const wobble = Math.sin(t * 1.4 + index) * 0.08;
 
       if (vehicle.axis === "x") {
@@ -954,27 +1279,53 @@ export default function DroneSimulation3D() {
       }
 
       vehicle.obstacle.position.copy(vehicle.group.position);
+      if (updateVelocity) {
+        vehicle.velocity.copy(vehicle.group.position).sub(previousPosition).divideScalar(Math.max(dt, 0.001));
+      }
     };
 
     const animate = () => {
       frameId = requestAnimationFrame(animate);
-      const dt = Math.min(clock.getDelta(), 0.04);
+      const rawDt = Math.min(clock.getDelta(), 0.04);
+      const activeControls = controlsRef.current;
+      const dt = activeControls.paused ? 0 : rawDt * activeControls.simSpeed;
       const t  = clock.elapsedTime;
+
+      if (commandsRef.current.resetRover) {
+        speed = 0;
+        steering = 0;
+        roverYaw = 0;
+        roverVerticalVelocity = 0;
+        rover.position.set(0, surfaceHeight(0, 176) + VEHICLE_CLEARANCE, 176);
+        rover.rotation.copy(terrainAdjustedEuler(roverYaw, rover.position.x, rover.position.z));
+        commandsRef.current.resetRover = false;
+      }
+
+      if (commandsRef.current.reassignMissions) {
+        drones.forEach((drone, index) => {
+          if (drone.role === "LOGISTICS") assignLogisticsMission(index);
+        });
+        commandsRef.current.reassignMissions = false;
+      }
 
       const fwd = keys.has("w") || keys.has("arrowup");
       const bwd = keys.has("s") || keys.has("arrowdown");
       const lft = keys.has("a") || keys.has("arrowleft");
       const rgt = keys.has("d") || keys.has("arrowright");
 
-      speed += ((fwd ? 1 : 0) - (bwd ? 0.72 : 0)) * dt * 26;
-      speed *= 0.964;
-      speed = Math.max(-9, Math.min(20, speed));
+      speed += ((fwd ? 1 : 0) - (bwd ? 0.72 : 0)) * dt * 26 * activeControls.roverPower;
+      speed *= 1 - Math.min(0.07, 0.036 / Math.max(activeControls.roverPower, 0.4));
+      speed = Math.max(-activeControls.roverMaxSpeed * 0.45, Math.min(activeControls.roverMaxSpeed, speed));
 
       const st = (lft ? 1 : 0) - (rgt ? 1 : 0);
-      steering += (st - steering) * dt * 7;
-      roverYaw += steering * speed * dt * 0.13;
+      steering += (st - steering) * dt * 7 * activeControls.roverSteering;
+      roverYaw += steering * speed * dt * 0.13 * activeControls.roverSteering;
 
       trafficVehicles.forEach((vehicle, index) => {
+        if (!activeControls.trafficEnabled) {
+          vehicle.velocity.set(0, 0, 0);
+          return;
+        }
         vehicle.progress += vehicle.direction * vehicle.speed * dt;
         if (vehicle.progress > vehicle.max) {
           vehicle.progress = vehicle.max;
@@ -987,24 +1338,27 @@ export default function DroneSimulation3D() {
         placeTrafficVehicle(vehicle, index, t, dt);
       });
 
-      for (let i = 0; i < trafficVehicles.length; i++) {
-        for (let j = i + 1; j < trafficVehicles.length; j++) {
-          const a = trafficVehicles[i];
-          const b = trafficVehicles[j];
-          const distance = a.obstacle.position.distanceTo(b.obstacle.position);
-          const minDistance = a.obstacle.radius + b.obstacle.radius + 0.9;
+      if (activeControls.trafficEnabled) {
+        for (let i = 0; i < trafficVehicles.length; i++) {
+          for (let j = i + 1; j < trafficVehicles.length; j++) {
+            const a = trafficVehicles[i];
+            const b = trafficVehicles[j];
+            const distance = a.obstacle.position.distanceTo(b.obstacle.position);
+            const minDistance = a.obstacle.radius + b.obstacle.radius + 0.9;
 
-          if (distance < minDistance) {
-            a.direction = a.direction === 1 ? -1 : 1;
-            b.direction = b.direction === 1 ? -1 : 1;
-            a.progress = THREE.MathUtils.clamp(a.progress + a.direction * 2.2, a.min, a.max);
-            b.progress = THREE.MathUtils.clamp(b.progress + b.direction * 2.2, b.min, b.max);
-            placeTrafficVehicle(a, i, t, dt);
-            placeTrafficVehicle(b, j, t, dt);
+            if (distance < minDistance) {
+              a.direction = a.direction === 1 ? -1 : 1;
+              b.direction = b.direction === 1 ? -1 : 1;
+              a.progress = THREE.MathUtils.clamp(a.progress + a.direction * 2.2, a.min, a.max);
+              b.progress = THREE.MathUtils.clamp(b.progress + b.direction * 2.2, b.min, b.max);
+              placeTrafficVehicle(a, i, t, dt, false);
+              placeTrafficVehicle(b, j, t, dt, false);
+            }
           }
         }
       }
 
+      previousRoverPosition.copy(rover.position);
       const dir = new THREE.Vector3(-Math.sin(roverYaw), 0, -Math.cos(roverYaw));
       rover.position.addScaledVector(dir, speed * dt);
       const fix = resolveCollision(rover.position, obstacles, 1.72);
@@ -1020,7 +1374,12 @@ export default function DroneSimulation3D() {
       rover.position.y = roverSurface.y;
       roverVerticalVelocity = roverSurface.verticalVelocity;
       rover.rotation.copy(terrainAdjustedEuler(roverYaw, rover.position.x, rover.position.z));
+      roverVelocity.copy(rover.position).sub(previousRoverPosition).divideScalar(Math.max(dt, 0.001));
       wheels.forEach(w => { w.rotation.x += speed * dt * 2.4; });
+
+      let dockingSlotOwner = drones.findIndex(
+        (candidate) => candidate.role === "LOGISTICS" && candidate.logisticState === "DOCK"
+      );
 
       drones.forEach((drone, i) => {
         const ph  = t * drone.speed + drone.phase;
@@ -1029,9 +1388,141 @@ export default function DroneSimulation3D() {
         let tx = 0, tz = 0;
         let altitudeOffset = drone.altitude;
 
-        if (drone.role === "SCOUT") {
-          tx = rover.position.x + Math.sin(ph) * 5.5;
-          tz = rover.position.z + Math.cos(ph) * 5.5;
+        if (drone.role === "LOGISTICS" && !activeControls.logisticsEnabled) {
+          if (drone.logisticState !== "PATROL") drone.logisticState = "PATROL";
+          tx = side * (42 + (i % 4) * 12 + Math.sin(ph * 0.6) * 8);
+          tz = ((t * 4.8 + i * 41) % 360) - 180;
+          altitudeOffset = drone.altitude + 2.5 + Math.sin(t * 1.4 + i) * 0.5;
+        } else if (drone.role === "LOGISTICS" && drone.logisticState !== "PATROL") {
+          const targetVehicle = drone.logisticTargetVehicleIndex >= 0
+            ? trafficVehicles[drone.logisticTargetVehicleIndex]
+            : null;
+          const targetPosition = targetVehicle?.group.position ?? rover.position;
+          const targetVelocity = targetVehicle?.velocity ?? roverVelocity;
+          const targetYaw = targetVehicle ? getVehicleYaw(targetVehicle) : roverYaw;
+          const forward = new THREE.Vector3(Math.sin(targetYaw), 0, Math.cos(targetYaw));
+          const deck = targetVehicle
+            ? new THREE.Vector3(
+                targetPosition.x + forward.x * -0.35,
+                targetPosition.y + 1.55,
+                targetPosition.z + forward.z * -0.35
+              )
+            : rover.localToWorld(ROVER_LANDING_PAD_LOCAL.clone());
+          updateDeckTracker(drone, deck, targetVelocity, dt);
+          const distanceToDeck = drone.group.position.distanceTo(drone.trackedDeck);
+          const interceptLead = THREE.MathUtils.clamp(distanceToDeck / 12, 0.08, 0.95);
+          const leadTime = drone.logisticState === "DOCK" ? 0.02 : drone.logisticState === "ALIGN" ? Math.min(interceptLead, 0.42) : interceptLead;
+          const settledDeck = drone.trackedDeck.clone().addScaledVector(drone.trackedDeckVelocity, 0.015);
+          const predictedDeck = drone.trackedDeck.clone().addScaledVector(drone.trackedDeckVelocity, leadTime);
+          const approach = predictedDeck.clone().add(new THREE.Vector3(
+            forward.x * -4,
+            6,
+            forward.z * -4
+          ));
+          const approachDistance = drone.group.position.distanceTo(approach);
+          if (drone.logisticState === "APPROACH") {
+            drone.dockTimer += dt;
+            drone.group.position.addScaledVector(drone.trackedDeckVelocity, dt * 0.25);
+            moveDroneToward(drone, approach, 12, dt);
+            if (approachDistance < 2.4) {
+              drone.logisticState = "ALIGN";
+              drone.dockTimer = 0;
+            }
+          } else if (drone.logisticState === "ALIGN") {
+            drone.dockTimer += dt;
+            const slotAvailable = dockingSlotOwner === -1 || dockingSlotOwner === i;
+            const hoverHeight = slotAvailable ? 2.35 : 5.25;
+            const captureRadius = targetVehicle ? 2.6 : 2.1;
+            const horizontalError = Math.hypot(
+              predictedDeck.x - drone.group.position.x,
+              predictedDeck.z - drone.group.position.z
+            );
+            const centerPoint = new THREE.Vector3(
+              predictedDeck.x,
+              predictedDeck.y + hoverHeight,
+              predictedDeck.z
+            );
+            const descendPoint = new THREE.Vector3(
+              predictedDeck.x,
+              predictedDeck.y + 0.42,
+              predictedDeck.z
+            );
+            const isInCaptureCone = slotAvailable && (horizontalError < captureRadius || drone.dockTimer > 1.4);
+            const alignTarget = isInCaptureCone ? descendPoint : centerPoint;
+
+            drone.group.position.addScaledVector(drone.trackedDeckVelocity, dt * (slotAvailable ? 1 : 0.25));
+            moveDroneLandingAxis(drone, alignTarget, slotAvailable ? 7.2 : 3.8, isInCaptureCone ? 1.8 : 2.2, dt);
+
+            const postHorizontalError = Math.hypot(
+              settledDeck.x - drone.group.position.x,
+              settledDeck.z - drone.group.position.z
+            );
+            const verticalError = Math.abs(drone.group.position.y - descendPoint.y);
+            if (slotAvailable && postHorizontalError < captureRadius && (verticalError < 0.55 || drone.dockTimer > 3.2)) {
+              drone.logisticState = "DOCK";
+              drone.dockTimer = 0;
+              dockingSlotOwner = i;
+            }
+          } else if (drone.logisticState === "DOCK") {
+            if (drone.isDocked) {
+              drone.dockTimer += dt;
+              drone.group.position.copy(deck);
+              if (drone.dockTimer > (targetVehicle ? 4.2 : 6.5)) {
+                drone.logisticState = "DEPART";
+                drone.isDocked = false;
+                drone.departTarget.copy(settledDeck).add(new THREE.Vector3(
+                  Math.sin(ph) * 26,
+                  11,
+                  Math.cos(ph) * 26
+                ));
+                drone.dockTimer = 0;
+              }
+            } else {
+              const magneticDistance = drone.group.position.distanceTo(settledDeck);
+              const finalDockPoint = magneticDistance < 1.2
+                ? settledDeck
+                : settledDeck.clone().add(new THREE.Vector3(0, 0.28, 0));
+              drone.group.position.addScaledVector(drone.trackedDeckVelocity, dt);
+              moveDroneLandingAxis(drone, finalDockPoint, targetVehicle ? 4.4 : 3.2, 1.75, dt);
+              const dockHorizontalError = Math.hypot(
+                settledDeck.x - drone.group.position.x,
+                settledDeck.z - drone.group.position.z
+              );
+              const dockVerticalError = Math.abs(settledDeck.y - drone.group.position.y);
+              const isSettled = dockHorizontalError < (targetVehicle ? 0.7 : 0.46) && dockVerticalError < 0.38;
+              if (isSettled) {
+                drone.group.position.copy(settledDeck);
+                drone.isDocked = true;
+                drone.dockTimer = 0;
+              }
+            }
+          } else if (drone.logisticState === "DEPART") {
+            moveDroneToward(drone, drone.departTarget, 10, dt);
+            if (drone.group.position.distanceTo(drone.departTarget) < 2.5) {
+              drone.logisticState = "PATROL";
+              assignLogisticsMission(i);
+            }
+          }
+
+          if (drone.logisticState === "DOCK") {
+            if (targetVehicle) {
+              setDroneLevelHeading(drone, settledDeck, dt);
+            } else {
+              drone.group.rotation.y = THREE.MathUtils.lerp(drone.group.rotation.y, rover.rotation.y, THREE.MathUtils.clamp(dt * 7, 0, 1));
+              drone.group.rotation.x = THREE.MathUtils.lerp(drone.group.rotation.x, 0, THREE.MathUtils.clamp(dt * 8, 0, 1));
+              drone.group.rotation.z = THREE.MathUtils.lerp(drone.group.rotation.z, 0, THREE.MathUtils.clamp(dt * 8, 0, 1));
+            }
+          } else {
+            setDroneLevelHeading(drone, predictedDeck, dt);
+          }
+        } else if (drone.role === "SCOUT") {
+          tx = side * (24 + Math.sin(ph * 0.8) * 38);
+          tz = pz;
+          altitudeOffset = drone.altitude + Math.sin(t * 1.6 + i) * 0.5;
+        } else if (drone.role === "LOGISTICS") {
+          tx = side * (42 + (i % 4) * 12 + Math.sin(ph * 0.6) * 8);
+          tz = ((t * 4.8 + i * 41) % 360) - 180;
+          altitudeOffset = drone.altitude + 2.5 + Math.sin(t * 1.4 + i) * 0.5;
         } else if (drone.role === "RELAY") {
           tx = side * (18 + Math.sin(ph) * 34);
           altitudeOffset = drone.altitude + Math.sin(t * 1.8 + i) * 0.6;
@@ -1045,9 +1536,15 @@ export default function DroneSimulation3D() {
         const ty = surfaceHeight(tx, tz) + altitudeOffset;
         const target = new THREE.Vector3(tx, ty, tz);
         target.addScaledVector(avoidanceForce(target, obstacles, 5.5), 7);
-        drone.group.position.lerp(target, 1 - Math.pow(0.014, dt));
-        drone.group.position.y = surfaceHeight(drone.group.position.x, drone.group.position.z) + drone.altitude + Math.sin(t * 2 + i) * 0.5;
-        if (drone.role === "SCOUT") drone.group.lookAt(rover.position.x, drone.group.position.y, rover.position.z);
+        if (!(drone.role === "LOGISTICS" && drone.logisticState !== "PATROL")) {
+          moveDroneToward(drone, target, drone.role === "LOGISTICS" ? 8 : 9.5, dt);
+          drone.group.position.y = surfaceHeight(drone.group.position.x, drone.group.position.z) + drone.altitude + Math.sin(t * 2 + i) * 0.5;
+          if (drone.role === "SCOUT") {
+            drone.group.lookAt(tx, drone.group.position.y, tz + side * 6);
+          } else if (drone.role === "LOGISTICS") {
+            drone.group.lookAt(tx, drone.group.position.y, tz);
+          }
+        }
 
         drone.bladePairs.forEach((pair, bi) => {
           const spin = bi % 2 === 0 ? 1 : -1;
@@ -1075,15 +1572,22 @@ export default function DroneSimulation3D() {
         if (hit) activeBeams++;
       });
 
-      camOff.set(0, 9.2, 16).applyAxisAngle(new THREE.Vector3(0, 1, 0), roverYaw);
-      camTarget.copy(rover.position).add(camOff);
-      camera.position.lerp(camTarget, 1 - Math.pow(0.001, dt));
+      if (activeControls.cameraMode === "TOP") {
+        camTarget.set(rover.position.x, rover.position.y + 62, rover.position.z + 0.01);
+      } else if (activeControls.cameraMode === "ORBIT") {
+        camOff.set(Math.sin(t * 0.18) * 31, 19, Math.cos(t * 0.18) * 31);
+        camTarget.copy(rover.position).add(camOff);
+      } else {
+        camOff.set(0, 9.2, 16).applyAxisAngle(new THREE.Vector3(0, 1, 0), roverYaw);
+        camTarget.copy(rover.position).add(camOff);
+      }
+      camera.position.lerp(camTarget, 1 - Math.pow(0.001, rawDt));
       camera.lookAt(rover.position.x, rover.position.y + 1.3, rover.position.z);
 
       renderer.render(scene, camera);
 
       if (++hudTick % 10 === 0) {
-        setHud({ speed, beams: activeBeams, nearest: near[0]?.d ?? 99 });
+        setHud({ speed: activeControls.paused ? 0 : speed, beams: activeBeams, nearest: near[0]?.d ?? 99 });
       }
     };
 
@@ -1112,7 +1616,17 @@ export default function DroneSimulation3D() {
       className="absolute inset-0 h-full w-full"
       role="img"
     >
-      <HUD {...hud} />
+      <HUD
+        {...hud}
+        controls={controls}
+        onControlsChange={setControls}
+        onResetRover={() => {
+          commandsRef.current.resetRover = true;
+        }}
+        onReassignMissions={() => {
+          commandsRef.current.reassignMissions = true;
+        }}
+      />
     </div>
   );
 }
