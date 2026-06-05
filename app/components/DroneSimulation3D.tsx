@@ -7,18 +7,30 @@ const SIDE_ROAD_Z = [-128, -76, -34, 31, 84, 132];
 const ROAD_SURFACE_Y = 0.04;
 const VEHICLE_CLEARANCE = 0.015;
 const ROVER_LANDING_PAD_LOCAL = new THREE.Vector3(0, 1.45, 1.22);
+const ROVER_MASS = 1850;
+const LOOP_ROAD_HALF_X = 122;
+const LOOP_ROAD_HALF_Z = 184;
+const LOOP_ROAD_HALF_WIDTH = 9.5;
+const LOOP_LANE_OFFSET = 3.35;
+const BUILDING_FOOTPRINT_SCALE = 1.75;
+const BUILDING_HEIGHT_SCALE = 2.8;
+const EVTOL_FLEET_SIZE = 24;
+const EVTOL_LANDING_CLEARANCE = 0.72;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Obstacle {
   position: THREE.Vector3;
   radius: number;
+  dynamic?: boolean;
+  halfExtents?: THREE.Vector2;
+  yaw?: number;
 }
 
 interface TrafficVehicle {
   group: THREE.Group;
   obstacle: Obstacle;
-  axis: "x" | "z";
+  axis: "x" | "z" | "loop";
   lane: number;
   progress: number;
   speed: number;
@@ -27,6 +39,20 @@ interface TrafficVehicle {
   direction: 1 | -1;
   verticalVelocity: number;
   velocity: THREE.Vector3;
+  impactVelocity: THREE.Vector3;
+  mass: number;
+  path: THREE.Vector3[];
+  pathIndex: number;
+  yaw: number;
+  steerAngle: number;
+  laneOffset: number;
+  yawOffset: number;
+  yawVelocity: number;
+}
+
+interface TrafficPath {
+  points: THREE.Vector3[];
+  direction: 1 | -1;
 }
 
 interface DroneRig {
@@ -46,6 +72,32 @@ interface DroneRig {
   radius: number;
   speed: number;
   altitude: number;
+}
+
+interface EvtolRig {
+  group: THREE.Group;
+  rotors: THREE.Mesh[];
+  navLightMats: THREE.MeshStandardMaterial[];
+  beaconMat: THREE.MeshStandardMaterial;
+  beam: THREE.Mesh<THREE.ConeGeometry, THREE.MeshBasicMaterial>;
+}
+
+interface RooftopPad {
+  position: THREE.Vector3;
+  yaw: number;
+  kind: "ROOFTOP" | "GROUND";
+}
+
+interface EvtolFlightRig extends EvtolRig {
+  state: "INBOUND" | "DESCEND" | "LANDED" | "TAKEOFF" | "OUTBOUND";
+  padIndex: number;
+  horizonIn: THREE.Vector3;
+  horizonOut: THREE.Vector3;
+  hoverPoint: THREE.Vector3;
+  timer: number;
+  phase: number;
+  cruiseSpeed: number;
+  cycles: number;
 }
 
 interface HudState {
@@ -95,24 +147,36 @@ function terrainHeight(x: number, z: number) {
   const ridges = Math.sin((x + z) * 0.045) * 0.9 + Math.cos((x - z) * 0.036) * 0.7;
   const rawHeight = broad + ridges - 0.25;
   const mainRoadCore = Math.abs(x) <= 13 && Math.abs(z) <= 190;
-  const sideRoadCore = SIDE_ROAD_Z.some((roadZ) => Math.abs(z - roadZ) <= 9 && Math.abs(x) <= 92);
+  const sideRoadCore = SIDE_ROAD_Z.some((roadZ) => Math.abs(z - roadZ) <= 9 && Math.abs(x) <= LOOP_ROAD_HALF_X);
+  const loopRoadCore =
+    (Math.abs(Math.abs(x) - LOOP_ROAD_HALF_X) <= LOOP_ROAD_HALF_WIDTH && Math.abs(z) <= LOOP_ROAD_HALF_Z + LOOP_ROAD_HALF_WIDTH) ||
+    (Math.abs(Math.abs(z) - LOOP_ROAD_HALF_Z) <= LOOP_ROAD_HALF_WIDTH && Math.abs(x) <= LOOP_ROAD_HALF_X + LOOP_ROAD_HALF_WIDTH);
 
-  if (mainRoadCore || sideRoadCore) return ROAD_SURFACE_Y;
+  if (mainRoadCore || sideRoadCore || loopRoadCore) return ROAD_SURFACE_Y;
 
   const sideRoadFlatten = SIDE_ROAD_Z.reduce((max, roadZ) => {
-    const shoulder = Math.abs(x) <= 96 ? Math.max(0, 1 - (Math.abs(z - roadZ) - 9) / 8) : 0;
+    const shoulder = Math.abs(x) <= LOOP_ROAD_HALF_X + 5 ? Math.max(0, 1 - (Math.abs(z - roadZ) - 9) / 8) : 0;
     return Math.max(max, shoulder);
   }, 0);
   const mainRoadFlatten = Math.abs(z) <= 194 ? Math.max(0, 1 - (Math.abs(x) - 13) / 8) : 0;
-  const flatten = Math.max(mainRoadFlatten, sideRoadFlatten);
+  const loopVerticalFlatten = Math.abs(z) <= LOOP_ROAD_HALF_Z + 18
+    ? Math.max(0, 1 - (Math.abs(Math.abs(x) - LOOP_ROAD_HALF_X) - LOOP_ROAD_HALF_WIDTH) / 10)
+    : 0;
+  const loopHorizontalFlatten = Math.abs(x) <= LOOP_ROAD_HALF_X + 18
+    ? Math.max(0, 1 - (Math.abs(Math.abs(z) - LOOP_ROAD_HALF_Z) - LOOP_ROAD_HALF_WIDTH) / 10)
+    : 0;
+  const flatten = Math.max(mainRoadFlatten, sideRoadFlatten, loopVerticalFlatten, loopHorizontalFlatten);
 
   return THREE.MathUtils.lerp(rawHeight, ROAD_SURFACE_Y, THREE.MathUtils.clamp(flatten, 0, 1));
 }
 
 function isRoadSurface(x: number, z: number) {
   const onMainRoad = Math.abs(x) < 13 && Math.abs(z) < 190;
-  const onSideRoad = SIDE_ROAD_Z.some((roadZ) => Math.abs(z - roadZ) < 9 && Math.abs(x) < 92);
-  return onMainRoad || onSideRoad;
+  const onSideRoad = SIDE_ROAD_Z.some((roadZ) => Math.abs(z - roadZ) < 9 && Math.abs(x) < LOOP_ROAD_HALF_X);
+  const onLoopRoad =
+    (Math.abs(Math.abs(x) - LOOP_ROAD_HALF_X) < LOOP_ROAD_HALF_WIDTH && Math.abs(z) < LOOP_ROAD_HALF_Z + LOOP_ROAD_HALF_WIDTH) ||
+    (Math.abs(Math.abs(z) - LOOP_ROAD_HALF_Z) < LOOP_ROAD_HALF_WIDTH && Math.abs(x) < LOOP_ROAD_HALF_X + LOOP_ROAD_HALF_WIDTH);
+  return onMainRoad || onSideRoad || onLoopRoad;
 }
 
 function surfaceHeight(x: number, z: number) {
@@ -181,13 +245,11 @@ function buildSky(scene: THREE.Scene) {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 2, 256);
 
-  const dome = new THREE.Mesh(
-    new THREE.SphereGeometry(520, 64, 32),
-    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), side: THREE.BackSide, fog: false })
-  );
-  dome.rotation.x = Math.PI;
-  dome.scale.y = -1;
-  scene.add(dome);
+  const skyTexture = new THREE.CanvasTexture(cv);
+  skyTexture.colorSpace = THREE.SRGBColorSpace;
+  skyTexture.minFilter = THREE.LinearFilter;
+  skyTexture.magFilter = THREE.LinearFilter;
+  scene.background = skyTexture;
 
   // Stars
   const N = 1800;
@@ -202,28 +264,32 @@ function buildSky(scene: THREE.Scene) {
   }
   const sg = new THREE.BufferGeometry();
   sg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  scene.add(new THREE.Points(sg, new THREE.PointsMaterial({
-    color: 0xffffff, size: 0.42, sizeAttenuation: true, transparent: true, opacity: 0.85, fog: false,
-  })));
+  const stars = new THREE.Points(sg, new THREE.PointsMaterial({
+    color: 0xffffff, size: 0.42, sizeAttenuation: true, transparent: true, opacity: 0.72, fog: false, depthWrite: false,
+  }));
+  stars.renderOrder = -20;
+  scene.add(stars);
 
   // Moon
   const moon = new THREE.Mesh(
     new THREE.CircleGeometry(3.5, 32),
-    new THREE.MeshBasicMaterial({ color: 0xccddef, side: THREE.DoubleSide, fog: false })
+    new THREE.MeshBasicMaterial({ color: 0xccddef, side: THREE.DoubleSide, fog: false, depthWrite: false, depthTest: false })
   );
   moon.position.set(-75, 125, -155);
   moon.lookAt(0, 0, 0);
+  moon.renderOrder = -10;
   scene.add(moon);
 
   // Horizon haze
   const hz = new THREE.Mesh(
     new THREE.CylinderGeometry(500, 500, 30, 80, 1, true),
     new THREE.MeshBasicMaterial({
-      color: 0x1a4a6a, transparent: true, opacity: 0.22,
-      side: THREE.BackSide, fog: false, depthWrite: false,
+      color: 0x2d7894, transparent: true, opacity: 0.14,
+      side: THREE.BackSide, fog: false, depthWrite: false, depthTest: false,
     })
   );
   hz.position.y = 3;
+  hz.renderOrder = -15;
   scene.add(hz);
 }
 
@@ -235,7 +301,7 @@ function buildLighting(scene: THREE.Scene) {
   const key = new THREE.DirectionalLight(0xb0ccf0, 2.6);
   key.position.set(-40, 55, -100);
   key.castShadow = true;
-  key.shadow.mapSize.set(4096, 4096);
+  key.shadow.mapSize.set(2048, 2048);
   key.shadow.camera.near = 0.5;
   key.shadow.camera.far = 520;
   key.shadow.camera.left = -210;
@@ -286,7 +352,15 @@ function buildGround(scene: THREE.Scene) {
   addPlane(16, 380, 0.025, 0, 0, roadMat);
   addPlane(5.2, 380, 0.022, -10.6, 0, shoulderMat);
   addPlane(5.2, 380, 0.022,  10.6, 0, shoulderMat);
-  ([-128, -76, -34, 31, 84, 132] as number[]).forEach(z => addPlane(178, 12, 0.025, 0, z, roadMat));
+  ([-128, -76, -34, 31, 84, 132] as number[]).forEach(z => addPlane(250, 12, 0.025, 0, z, roadMat));
+  addPlane(LOOP_ROAD_HALF_WIDTH * 2, LOOP_ROAD_HALF_Z * 2 + LOOP_ROAD_HALF_WIDTH * 2, 0.026, -LOOP_ROAD_HALF_X, 0, roadMat);
+  addPlane(LOOP_ROAD_HALF_WIDTH * 2, LOOP_ROAD_HALF_Z * 2 + LOOP_ROAD_HALF_WIDTH * 2, 0.026, LOOP_ROAD_HALF_X, 0, roadMat);
+  addPlane(LOOP_ROAD_HALF_X * 2 + LOOP_ROAD_HALF_WIDTH * 2, LOOP_ROAD_HALF_WIDTH * 2, 0.026, 0, -LOOP_ROAD_HALF_Z, roadMat);
+  addPlane(LOOP_ROAD_HALF_X * 2 + LOOP_ROAD_HALF_WIDTH * 2, LOOP_ROAD_HALF_WIDTH * 2, 0.026, 0, LOOP_ROAD_HALF_Z, roadMat);
+  addPlane(3.2, LOOP_ROAD_HALF_Z * 2 + LOOP_ROAD_HALF_WIDTH * 2, 0.024, -LOOP_ROAD_HALF_X + LOOP_ROAD_HALF_WIDTH + 2.1, 0, shoulderMat);
+  addPlane(3.2, LOOP_ROAD_HALF_Z * 2 + LOOP_ROAD_HALF_WIDTH * 2, 0.024, LOOP_ROAD_HALF_X - LOOP_ROAD_HALF_WIDTH - 2.1, 0, shoulderMat);
+  addPlane(LOOP_ROAD_HALF_X * 2 + LOOP_ROAD_HALF_WIDTH * 2, 3.2, 0.024, 0, -LOOP_ROAD_HALF_Z + LOOP_ROAD_HALF_WIDTH + 2.1, shoulderMat);
+  addPlane(LOOP_ROAD_HALF_X * 2 + LOOP_ROAD_HALF_WIDTH * 2, 3.2, 0.024, 0, LOOP_ROAD_HALF_Z - LOOP_ROAD_HALF_WIDTH - 2.1, shoulderMat);
 
   for (let z = -184; z < 185; z += 8) {
     const d = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 2.8), laneMat);
@@ -295,13 +369,29 @@ function buildGround(scene: THREE.Scene) {
     scene.add(d);
   }
   ([-128, -76, -34, 31, 84, 132] as number[]).forEach(z => {
-    for (let x = -84; x < 85; x += 8) {
+    for (let x = -116; x < 117; x += 8) {
       const d = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.2), laneMat);
       d.rotation.x = -Math.PI / 2;
       d.position.set(x, 0.047, z);
       scene.add(d);
     }
   });
+  for (let z = -176; z <= 176; z += 8) {
+    ([-LOOP_ROAD_HALF_X, LOOP_ROAD_HALF_X] as number[]).forEach(x => {
+      const d = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 2.8), laneMat);
+      d.rotation.x = -Math.PI / 2;
+      d.position.set(x, 0.049, z);
+      scene.add(d);
+    });
+  }
+  for (let x = -112; x <= 112; x += 8) {
+    ([-LOOP_ROAD_HALF_Z, LOOP_ROAD_HALF_Z] as number[]).forEach(z => {
+      const d = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.2), laneMat);
+      d.rotation.x = -Math.PI / 2;
+      d.position.set(x, 0.049, z);
+      scene.add(d);
+    });
+  }
 
   const creek = new THREE.Mesh(
     new THREE.PlaneGeometry(13, 170),
@@ -372,9 +462,9 @@ function createRover(): { rover: THREE.Group; wheels: THREE.Mesh[] } {
   g.add(padCross);
 
   ([-0.72, 0.72] as number[]).forEach(x => {
-    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.05), emissiveMat(0xfff4d0, 0xfff4d0, 4));
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.05), emissiveMat(0xfff8dc, 0xfff4d0, 6.5));
     hl.position.set(x, 0.88, -2.34); g.add(hl);
-    const sl = new THREE.SpotLight(0xfff0cc, 14, 20, Math.PI / 8, 0.55);
+    const sl = new THREE.SpotLight(0xfff0cc, 22, 26, Math.PI / 7, 0.5);
     sl.position.set(x, 0.88, -2.34);
     sl.target.position.set(x * 0.5, 0, -8);
     sl.castShadow = false;
@@ -465,6 +555,152 @@ function createDrone(role: DroneRig["role"]): {
   return { group: g, bladePairs, navLightMats };
 }
 
+// ── Passenger eVTOL ───────────────────────────────────────────────────────────
+
+function createLargeEvtol(): EvtolRig {
+  const g = new THREE.Group();
+  const hull = stdMat(0xd8edf6, 0.38, 0.28);
+  const belly = stdMat(0x233642, 0.56, 0.34);
+  const frame = stdMat(0x506877, 0.36, 0.62);
+  const dark = stdMat(0x07121a, 0.58, 0.2);
+  const glass = glassMat(0x76d9ff);
+
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(3.15, 0.92, 10.2), hull);
+  cabin.position.y = 0.35;
+  cabin.castShadow = true;
+  cabin.receiveShadow = true;
+  g.add(cabin);
+
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(2.45, 0.34, 7.4), stdMat(0xf2fbff, 0.35, 0.18));
+  roof.position.set(0, 0.98, -0.45);
+  roof.castShadow = true;
+  g.add(roof);
+
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(1.62, 32, 16), hull);
+  nose.scale.set(0.95, 0.38, 1.08);
+  nose.position.set(0, 0.42, -5.1);
+  nose.castShadow = true;
+  g.add(nose);
+
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(1.18, 3.05, 28), hull);
+  tail.position.set(0, 0.42, 6.15);
+  tail.rotation.x = Math.PI / 2;
+  tail.castShadow = true;
+  g.add(tail);
+
+  const bellyPod = new THREE.Mesh(new THREE.BoxGeometry(2.35, 0.34, 6.6), belly);
+  bellyPod.position.set(0, -0.24, 0.35);
+  bellyPod.castShadow = true;
+  g.add(bellyPod);
+
+  const windshield = new THREE.Mesh(new THREE.PlaneGeometry(2.05, 0.66), glass);
+  windshield.position.set(0, 0.83, -5.72);
+  windshield.rotation.x = -0.36;
+  g.add(windshield);
+
+  ([-1, 1] as number[]).forEach((side) => {
+    const sideWindow = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.42), glass);
+    sideWindow.position.set(side * 1.59, 0.72, -3.1);
+    sideWindow.rotation.y = side * Math.PI / 2;
+    g.add(sideWindow);
+
+    for (let i = 0; i < 5; i++) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.38), glass);
+      win.position.set(side * 1.6, 0.67, -2 + i * 1.18);
+      win.rotation.y = side * Math.PI / 2;
+      g.add(win);
+    }
+
+    const skid = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 5.8, 10), frame);
+    skid.position.set(side * 1.12, -0.8, 0.35);
+    skid.rotation.x = Math.PI / 2;
+    skid.castShadow = true;
+    g.add(skid);
+
+  });
+
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(15.8, 0.16, 0.82), frame);
+  wing.position.set(0, 0.72, -0.9);
+  wing.castShadow = true;
+  g.add(wing);
+
+  const tailWing = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.12, 0.56), frame);
+  tailWing.position.set(0, 1.0, 5.65);
+  tailWing.castShadow = true;
+  g.add(tailWing);
+
+  const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.24, 1.75, 1.36), frame);
+  tailFin.position.set(0, 1.62, 5.82);
+  tailFin.castShadow = true;
+  g.add(tailFin);
+
+  const rotors: THREE.Mesh[] = [];
+  const navLightMats: THREE.MeshStandardMaterial[] = [];
+  const rotorStations: [number, number, number][] = [
+    [-7.7, 0.9, -3.25], [-7.25, 0.9, 0.25], [-5.85, 0.9, 4.35],
+    [7.7, 0.9, -3.25], [7.25, 0.9, 0.25], [5.85, 0.9, 4.35],
+  ];
+
+  rotorStations.forEach(([x, y, z], index) => {
+    const pylon = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, Math.abs(x) - 1.35, 10), frame);
+    pylon.position.set(x * 0.5 + Math.sign(x) * 0.68, y - 0.05, z);
+    pylon.rotation.z = Math.PI / 2;
+    pylon.castShadow = true;
+    g.add(pylon);
+
+    const nacelle = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.36, 0.68, 20), dark);
+    nacelle.position.set(x, y + 0.02, z);
+    nacelle.castShadow = true;
+    g.add(nacelle);
+
+    const disc = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.48, 1.48, 0.016, 56),
+      new THREE.MeshStandardMaterial({ color: 0x9fdcff, roughness: 0.2, metalness: 0.05, transparent: true, opacity: 0.16 })
+    );
+    disc.position.set(x, y + 0.16, z);
+    disc.castShadow = true;
+    g.add(disc);
+    rotors.push(disc);
+
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(2.95, 0.014, 0.12), stdMat(0x13212a, 0.48, 0.35));
+    blade.position.copy(disc.position);
+    blade.rotation.y = index % 2 === 0 ? 0 : Math.PI / 2;
+    blade.castShadow = true;
+    g.add(blade);
+    rotors.push(blade);
+  });
+
+  const redMat = emissiveMat(0xff1a1a, 0xff1a1a, 2.8);
+  const greenMat = emissiveMat(0x32ff6a, 0x32ff6a, 2.8);
+  const beaconMat = emissiveMat(0xfff4d0, 0xfff4d0, 3.5);
+  const leftNav = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), redMat);
+  leftNav.position.set(-6.9, 0.95, -0.7);
+  const rightNav = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), greenMat);
+  rightNav.position.set(6.9, 0.95, -0.7);
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 8), beaconMat);
+  beacon.position.set(0, 1.15, -3.2);
+  g.add(leftNav, rightNav, beacon);
+  navLightMats.push(redMat, greenMat);
+
+  const beam = new THREE.Mesh(
+    new THREE.ConeGeometry(1.15, 8.2, 24, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xbdefff,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  beam.position.set(0, -4.2, -3.25);
+  beam.rotation.x = Math.PI;
+  beam.renderOrder = 5;
+  g.add(beam);
+
+  g.scale.setScalar(1);
+  return { group: g, rotors, navLightMats, beaconMat, beam };
+}
+
 // ── Buildings ─────────────────────────────────────────────────────────────────
 
 function createBuilding(w: number, d: number, h: number, style: number): THREE.Group {
@@ -478,17 +714,52 @@ function createBuilding(w: number, d: number, h: number, style: number): THREE.G
   body.position.y = h / 2; body.castShadow = true; body.receiveShadow = true; g.add(body);
 
   const winMat = emissiveMat(0x88d0ff, 0x88d0ff, 0.35);
-  const rows = Math.floor(h / 1.4);
-  const cols = Math.floor(w / 1.2);
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (Math.random() > 0.38) {
-        const win = new THREE.Mesh(new THREE.PlaneGeometry(0.48, 0.62), winMat);
-        win.position.set(-w / 2 + 0.85 + c * 1.2, 1.1 + r * 1.4, d / 2 + 0.01);
-        g.add(win);
+  const addWindowWall = (side: "front" | "back" | "left" | "right") => {
+    const horizontalSpan = side === "front" || side === "back" ? w : d;
+    const rows = Math.max(2, Math.floor((h - 1.4) / 1.45));
+    const cols = Math.max(2, Math.floor((horizontalSpan - 1.2) / 1.25));
+    const matrices: THREE.Matrix4[] = [];
+    const rotation = new THREE.Euler();
+    const quaternion = new THREE.Quaternion();
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (((r * 7 + c * 11 + style * 5) % 10) < 3) continue;
+
+        const position = new THREE.Vector3();
+        const horizontal = -horizontalSpan / 2 + 0.78 + c * 1.25;
+        const y = 1.15 + r * 1.45;
+
+        if (side === "front") {
+          position.set(horizontal, y, d / 2 + 0.012);
+          rotation.set(0, 0, 0);
+        } else if (side === "back") {
+          position.set(-horizontal, y, -d / 2 - 0.012);
+          rotation.set(0, Math.PI, 0);
+        } else if (side === "left") {
+          position.set(-w / 2 - 0.012, y, -horizontal);
+          rotation.set(0, -Math.PI / 2, 0);
+        } else {
+          position.set(w / 2 + 0.012, y, horizontal);
+          rotation.set(0, Math.PI / 2, 0);
+        }
+        quaternion.setFromEuler(rotation);
+        matrices.push(new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1)));
       }
     }
-  }
+
+    if (matrices.length > 0) {
+      const windows = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.5, 0.64), winMat, matrices.length);
+      matrices.forEach((matrix, index) => windows.setMatrixAt(index, matrix));
+      windows.instanceMatrix.needsUpdate = true;
+      windows.frustumCulled = false;
+      g.add(windows);
+    }
+  };
+  addWindowWall("front");
+  addWindowWall("back");
+  addWindowWall("left");
+  addWindowWall("right");
 
   const trim = new THREE.Mesh(new THREE.BoxGeometry(w + 0.1, 0.16, d + 0.1), emissiveMat(trimColor, trimColor, 0.5));
   trim.position.y = h + 0.08; g.add(trim);
@@ -499,6 +770,40 @@ function createBuilding(w: number, d: number, h: number, style: number): THREE.G
     const blink = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), emissiveMat(0xff1a00, 0xff1a00, 3.5));
     blink.position.set(w * 0.3, h + 1.45, -d * 0.3); g.add(blink);
   }
+  return g;
+}
+
+function createGroundLandingPad(style: number): THREE.Group {
+  const g = new THREE.Group();
+  const baseMat = stdMat(0x10191b, 0.78, 0.08);
+  const ringColor = style % 2 === 0 ? 0x66ffcc : 0x00c8ff;
+  const ringMat = emissiveMat(ringColor, ringColor, 1.5);
+  const amberMat = emissiveMat(0xffaa22, 0xffaa22, 2.2);
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.45, 0.08, 72), baseMat);
+  base.position.y = 0.04;
+  base.receiveShadow = true;
+  g.add(base);
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(3.05, 0.07, 10, 80), ringMat);
+  ring.position.y = 0.11;
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+
+  ([0, Math.PI / 2] as number[]).forEach((rot) => {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.035, 0.18), ringMat);
+    stripe.position.y = 0.13;
+    stripe.rotation.y = rot;
+    g.add(stripe);
+  });
+
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const light = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), amberMat);
+    light.position.set(Math.sin(angle) * 3.72, 0.2, Math.cos(angle) * 3.72);
+    g.add(light);
+  }
+
   return g;
 }
 
@@ -541,6 +846,18 @@ function createSedan(color: number): THREE.Group {
     const w = new THREE.Mesh(wGeo, tire); w.position.set(x, y, z); w.rotation.z = Math.PI / 2; w.castShadow = true;
     const r = new THREE.Mesh(rGeo, rim);  r.position.set(x, y, z); r.rotation.z = Math.PI / 2;
     g.add(w, r);
+  });
+
+  ([-0.68, 0.68] as number[]).forEach(x => {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.12, 0.05), emissiveMat(0xfff7d8, 0xfff1c6, 5.5));
+    hl.position.set(x, 0.66, -2.12);
+    g.add(hl);
+
+    const beam = new THREE.SpotLight(0xffe8b8, 14, 28, Math.PI / 8, 0.56, 1.5);
+    beam.position.set(x, 0.68, -2.16);
+    beam.target.position.set(x * 0.45, 0.42, -8.5);
+    beam.castShadow = false;
+    g.add(beam, beam.target);
   });
 
   ([-0.68, 0.68] as number[]).forEach(x => {
@@ -639,13 +956,49 @@ function avoidanceForce(pos: THREE.Vector3, obs: Obstacle[], clearance: number):
   return f;
 }
 
-function resolveCollision(pos: THREE.Vector3, obs: Obstacle[], radius: number): THREE.Vector3 {
+function circleObstacleContact(pos: THREE.Vector3, radius: number, obstacle: Obstacle) {
+  if (!obstacle.halfExtents) {
+    const off = pos.clone().sub(obstacle.position);
+    off.y = 0;
+    const distance = Math.max(off.length(), 0.001);
+    const minDistance = obstacle.radius + radius;
+    return distance < minDistance ? off.normalize().multiplyScalar(minDistance - distance) : null;
+  }
+
+  const yaw = obstacle.yaw ?? 0;
+  const toCircle = pos.clone().sub(obstacle.position);
+  toCircle.y = 0;
+  const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+  const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+  const localX = toCircle.dot(right);
+  const localZ = toCircle.dot(forward);
+  const closestX = THREE.MathUtils.clamp(localX, -obstacle.halfExtents.x, obstacle.halfExtents.x);
+  const closestZ = THREE.MathUtils.clamp(localZ, -obstacle.halfExtents.y, obstacle.halfExtents.y);
+  const dx = localX - closestX;
+  const dz = localZ - closestZ;
+  const distanceSq = dx * dx + dz * dz;
+
+  if (distanceSq > radius * radius) return null;
+
+  const distance = Math.sqrt(distanceSq);
+  if (distance > 0.001) {
+    return right.multiplyScalar(dx / distance).addScaledVector(forward, dz / distance).multiplyScalar(radius - distance);
+  }
+
+  const sideGap = obstacle.halfExtents.x - Math.abs(localX);
+  const endGap = obstacle.halfExtents.y - Math.abs(localZ);
+  if (sideGap < endGap) {
+    return right.multiplyScalar(localX >= 0 ? 1 : -1).multiplyScalar(radius + sideGap);
+  }
+  return forward.multiplyScalar(localZ >= 0 ? 1 : -1).multiplyScalar(radius + endGap);
+}
+
+function resolveCollision(pos: THREE.Vector3, obs: Obstacle[], radius: number, includeDynamic = false): THREE.Vector3 {
   const c = new THREE.Vector3();
   obs.forEach(o => {
-    const off = pos.clone().sub(o.position); off.y = 0;
-    const d = Math.max(off.length(), 0.001);
-    const mn = o.radius + radius;
-    if (d < mn) c.addScaledVector(off.normalize(), mn - d);
+    if (o.dynamic && !includeDynamic) return;
+    const push = circleObstacleContact(pos, radius, o);
+    if (push) c.add(push);
   });
   return c;
 }
@@ -890,7 +1243,7 @@ export default function DroneSimulation3D() {
 
     // ── Scene setup ──────────────────────────────────────────────────────────
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x040a10, 0.0032);
+    scene.fog = new THREE.FogExp2(0x0b2e58, 0.0024);
 
     const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 560);
     camera.position.set(0, 9, 15);
@@ -900,7 +1253,8 @@ export default function DroneSimulation3D() {
       powerPreference: "high-performance",
       preserveDrawingBuffer: true,
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.35));
+    renderer.setClearColor(0x0b2e58, 1);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.domElement.style.position = "absolute";
@@ -917,12 +1271,16 @@ export default function DroneSimulation3D() {
     buildGround(scene);
 
     const obstacles: Obstacle[] = [];
+    const rooftopPads: RooftopPad[] = [];
     const sideRoadZ = SIDE_ROAD_Z;
 
     function isOnRoad(pos: THREE.Vector3, radius: number) {
       const onMainRoad = Math.abs(pos.x) < 13 + radius && Math.abs(pos.z) < 190;
-      const onSideRoad = sideRoadZ.some((z) => Math.abs(pos.z - z) < 9 + radius && Math.abs(pos.x) < 92);
-      return onMainRoad || onSideRoad;
+      const onSideRoad = sideRoadZ.some((z) => Math.abs(pos.z - z) < 9 + radius && Math.abs(pos.x) < LOOP_ROAD_HALF_X + radius);
+      const onLoopRoad =
+        (Math.abs(Math.abs(pos.x) - LOOP_ROAD_HALF_X) < LOOP_ROAD_HALF_WIDTH + radius && Math.abs(pos.z) < LOOP_ROAD_HALF_Z + LOOP_ROAD_HALF_WIDTH + radius) ||
+        (Math.abs(Math.abs(pos.z) - LOOP_ROAD_HALF_Z) < LOOP_ROAD_HALF_WIDTH + radius && Math.abs(pos.x) < LOOP_ROAD_HALF_X + LOOP_ROAD_HALF_WIDTH + radius);
+      return onMainRoad || onSideRoad || onLoopRoad;
     }
 
     function offRoadPosition(x: number, z: number, radius: number) {
@@ -933,10 +1291,16 @@ export default function DroneSimulation3D() {
       }
 
       sideRoadZ.forEach((roadZ) => {
-        if (Math.abs(pos.z - roadZ) < 9 + radius && Math.abs(pos.x) < 92) {
+        if (Math.abs(pos.z - roadZ) < 9 + radius && Math.abs(pos.x) < LOOP_ROAD_HALF_X + radius) {
           pos.z = roadZ + (pos.z < roadZ ? -1 : 1) * (11 + radius);
         }
       });
+      if (Math.abs(Math.abs(pos.x) - LOOP_ROAD_HALF_X) < LOOP_ROAD_HALF_WIDTH + radius && Math.abs(pos.z) < LOOP_ROAD_HALF_Z + LOOP_ROAD_HALF_WIDTH + radius) {
+        pos.x = Math.sign(pos.x || 1) * (LOOP_ROAD_HALF_X + LOOP_ROAD_HALF_WIDTH + radius + 2);
+      }
+      if (Math.abs(Math.abs(pos.z) - LOOP_ROAD_HALF_Z) < LOOP_ROAD_HALF_WIDTH + radius && Math.abs(pos.x) < LOOP_ROAD_HALF_X + LOOP_ROAD_HALF_WIDTH + radius) {
+        pos.z = Math.sign(pos.z || 1) * (LOOP_ROAD_HALF_Z + LOOP_ROAD_HALF_WIDTH + radius + 2);
+      }
 
       return pos;
     }
@@ -971,17 +1335,33 @@ export default function DroneSimulation3D() {
     }
 
     function roadVehicleRoute(x: number, z: number) {
+      const nearLoop =
+        Math.abs(Math.abs(x) - LOOP_ROAD_HALF_X) < 24 ||
+        Math.abs(Math.abs(z) - LOOP_ROAD_HALF_Z) < 24;
+      if (nearLoop) {
+        const lane = x + z > 0 ? LOOP_LANE_OFFSET : -LOOP_LANE_OFFSET;
+        const { perimeter } = loopRouteAt(0, lane);
+        return {
+          axis: "loop" as const,
+          lane,
+          progress: loopProgressFromPoint(x, z, lane),
+          min: 0,
+          max: perimeter,
+        };
+      }
+
       const nearestSideRoad = sideRoadZ.reduce((nearest, roadZ) => (
         Math.abs(z - roadZ) < Math.abs(z - nearest) ? roadZ : nearest
       ), sideRoadZ[0]);
 
-      if (Math.abs(z - nearestSideRoad) < 18 && Math.abs(x) < 86) {
+      if (Math.abs(z - nearestSideRoad) < 18 && Math.abs(x) < LOOP_ROAD_HALF_X - 6) {
+        const laneOffset = x >= 0 ? -LOOP_LANE_OFFSET : LOOP_LANE_OFFSET;
         return {
           axis: "x" as const,
-          lane: nearestSideRoad,
-          progress: THREE.MathUtils.clamp(x, -78, 78),
-          min: -78,
-          max: 78,
+          lane: nearestSideRoad + laneOffset,
+          progress: THREE.MathUtils.clamp(x, -112, 112),
+          min: -112,
+          max: 112,
         };
       }
 
@@ -994,9 +1374,91 @@ export default function DroneSimulation3D() {
       };
     }
 
+    const closedPath = (points: [number, number][]) => points.map(([x, z]) => (
+      new THREE.Vector3(x, surfaceHeight(x, z) + VEHICLE_CLEARANCE, z)
+    ));
+    const clockwiseLoop = (left: number, right: number, top: number, bottom: number, lane = LOOP_LANE_OFFSET) => closedPath([
+      [left + lane, top + lane],
+      [right - lane, top + lane],
+      [right - lane, bottom - lane],
+      [left + lane, bottom - lane],
+    ]);
+    const counterClockwiseLoop = (left: number, right: number, top: number, bottom: number, lane = LOOP_LANE_OFFSET) => closedPath([
+      [left - lane, top - lane],
+      [left - lane, bottom + lane],
+      [right + lane, bottom + lane],
+      [right + lane, top - lane],
+    ]);
+    const makeTrafficPath = (points: THREE.Vector3[], direction: 1 | -1 = 1): TrafficPath => ({ points, direction });
+    const trafficPaths: TrafficPath[] = [
+      makeTrafficPath(clockwiseLoop(-LOOP_ROAD_HALF_X, LOOP_ROAD_HALF_X, -LOOP_ROAD_HALF_Z, LOOP_ROAD_HALF_Z)),
+      makeTrafficPath(counterClockwiseLoop(-LOOP_ROAD_HALF_X, LOOP_ROAD_HALF_X, -LOOP_ROAD_HALF_Z, LOOP_ROAD_HALF_Z)),
+      makeTrafficPath(clockwiseLoop(-112, 112, -128, -76)),
+      makeTrafficPath(counterClockwiseLoop(-112, 112, -128, -76)),
+      makeTrafficPath(clockwiseLoop(-112, 112, -34, 31)),
+      makeTrafficPath(counterClockwiseLoop(-112, 112, -34, 31)),
+      makeTrafficPath(clockwiseLoop(-112, 112, 84, 132)),
+      makeTrafficPath(counterClockwiseLoop(-112, 112, 84, 132)),
+      makeTrafficPath(clockwiseLoop(-92, 92, -184, -128)),
+      makeTrafficPath(clockwiseLoop(-92, 92, 132, 184)),
+      makeTrafficPath(closedPath([[-3.8, -178], [-3.8, -128], [-112, -128], [-112, -184], [3.8, -184], [3.8, -76], [112, -76], [112, -128]])),
+      makeTrafficPath(closedPath([[3.8, -34], [3.8, 31], [112, 31], [112, 84], [-3.8, 84], [-3.8, 31], [-112, 31], [-112, -34]])),
+    ];
+    const nearestPathIndex = (path: THREE.Vector3[], x: number, z: number) => path.reduce((best, point, pointIndex) => {
+      const bestPoint = path[best];
+      return Math.hypot(point.x - x, point.z - z) < Math.hypot(bestPoint.x - x, bestPoint.z - z) ? pointIndex : best;
+    }, 0);
+
     function addObs(obj: THREE.Object3D, pos: THREE.Vector3, radius: number) {
-      obj.position.copy(pos); scene.add(obj);
-      obstacles.push({ position: pos.clone(), radius });
+      obj.position.copy(pos);
+      scene.add(obj);
+      obj.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(obj);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const halfExtents = size.x > 0.4 && size.z > 0.4
+        ? new THREE.Vector2(Math.max(0.25, size.x * 0.5), Math.max(0.25, size.z * 0.5))
+        : undefined;
+      obstacles.push({
+        position: pos.clone(),
+        radius,
+        halfExtents,
+        yaw: obj.rotation.y,
+      });
+    }
+
+    function addBuildingObs(x: number, z: number, w: number, d: number, h: number, style: number) {
+      const scaledW = w * BUILDING_FOOTPRINT_SCALE;
+      const scaledD = d * BUILDING_FOOTPRINT_SCALE;
+      const scaledH = h * BUILDING_HEIGHT_SCALE;
+      const building = createBuilding(scaledW, scaledD, scaledH, style);
+      const radius = Math.max(scaledW, scaledD) * 0.72;
+      const pos = openPosition(x, z, radius);
+      const canHostPad = scaledW > 8.8 && scaledD > 8.4 && scaledH > 18;
+
+      if (canHostPad) {
+        const padMat = emissiveMat(0x66ffcc, 0x66ffcc, 1.4);
+        const padRing = new THREE.Mesh(new THREE.TorusGeometry(2.35, 0.055, 8, 64), padMat);
+        padRing.position.set(0, scaledH + 0.24, 0);
+        padRing.rotation.x = Math.PI / 2;
+        building.add(padRing);
+
+        const padLineMat = emissiveMat(0x00c8ff, 0x00c8ff, 1.1);
+        ([0, Math.PI / 2] as number[]).forEach((rot) => {
+          const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.035, 0.16), padLineMat);
+          stripe.position.set(0, scaledH + 0.26, 0);
+          stripe.rotation.y = rot;
+          building.add(stripe);
+        });
+
+        rooftopPads.push({
+          position: new THREE.Vector3(pos.x, pos.y + scaledH + EVTOL_LANDING_CLEARANCE, pos.z),
+          yaw: style % 2 === 0 ? 0 : Math.PI / 2,
+          kind: "ROOFTOP",
+        });
+      }
+
+      addObs(building, pos, radius);
     }
 
     // Buildings
@@ -1006,8 +1468,15 @@ export default function DroneSimulation3D() {
       [28,8,5.2,5.8,9.2,1],[-52,22,8.5,7.5,13.5,2],[54,44,7.8,7.1,11.2,3],
       [-31,48,5.4,4.9,6.4,2],[25,63,4.8,5.8,7.6,3],[-38,104,6.6,6.1,9.2,0],
       [42,126,7.4,6.8,14.2,1],[-24,158,5.6,6.2,8.3,2],[28,172,6.4,6.4,9.6,3]] as number[][]).forEach(([x,z,w,d,h,s]) => {
-      const radius = Math.max(w,d) * 0.72;
-      addObs(createBuilding(w,d,h,s), openPosition(x, z, radius), radius);
+      addBuildingObs(x, z, w, d, h, s);
+    });
+    ([[-86,-154,6.8,5.8,14.5,1],[-88,-101,5.8,6.4,11.2,2],[-84,-52,7.2,5.9,16.8,3],
+      [-86,6,6.2,6.2,13.4,0],[-88,58,7.8,6.8,18.5,1],[-86,116,6.4,6.0,12.8,2],
+      [86,-150,7.4,6.4,15.2,3],[88,-94,5.9,6.8,10.4,0],[86,-42,6.8,6.1,14.8,1],
+      [88,12,7.6,6.6,17.4,2],[86,72,5.8,6.2,12.0,3],[88,140,7.2,6.4,19.0,0],
+      [-112,-92,5.8,5.4,9.8,2],[112,-72,6.1,5.8,10.6,1],[-112,74,6.5,6.2,12.2,0],
+      [112,102,5.6,5.8,9.2,3],[-62,184,8.5,5.2,13.8,1],[54,-184,7.8,5.5,11.5,2]] as number[][]).forEach(([x,z,w,d,h,s]) => {
+      addBuildingObs(x, z, w, d, h, s);
     });
 
     // Trees
@@ -1019,6 +1488,14 @@ export default function DroneSimulation3D() {
       const radius = 1.1 + (h - 3) * 0.12;
       addObs(createTree(h), openPosition(x, z, radius), radius);
     }
+    for (let i = 0; i < 72; i++) {
+      const side = i % 4;
+      const step = -168 + (i % 18) * 19;
+      const x = side < 2 ? (side === 0 ? -107 : 107) : step * 0.62;
+      const z = side < 2 ? step : (side === 2 ? -171 : 171);
+      const h = 3.8 + (i % 7) * 0.18;
+      addObs(createTree(h), openPosition(x, z, 1.5), 1.5);
+    }
 
     // Sensor towers
     ([[-82,-150,9.2],[78,-130,8.6],[-55,-40,7.2],[-48,53,8.4],[52,-54,7.8],[50,46,8.1],[-78,142,9.8],[82,162,9.1]] as number[][]).forEach(([x,z,h]) => {
@@ -1028,6 +1505,10 @@ export default function DroneSimulation3D() {
     // Utility poles
     for (let z = -174; z < 178; z += 18)
       ([-12.5, 12.5] as number[]).forEach(x => addObs(createUtilityPole(5.5), openPosition(x, z, 0.8), 0.8));
+    for (let z = -168; z <= 168; z += 24)
+      ([-110, 110] as number[]).forEach(x => addObs(createUtilityPole(6.2), openPosition(x, z, 0.8), 0.8));
+    for (let x = -108; x <= 108; x += 24)
+      ([-172, 172] as number[]).forEach(z => addObs(createUtilityPole(6.2), openPosition(x, z, 0.8), 0.8));
 
     const trafficVehicles: TrafficVehicle[] = [];
 
@@ -1035,18 +1516,30 @@ export default function DroneSimulation3D() {
     ([[-4.2,-154,0x1e4a6e,0.18],[4.1,-118,0x2a3f22,-0.22],[-29,-76,0x4a2a1e,Math.PI/2],
       [28,-34,0x1a2e3a,Math.PI/2],[-4.2,-49,0x1e4a6e,0.18],[4.1,-2,0x2a3f22,-0.22],
       [-29,31,0x4a2a1e,Math.PI/2],[28,84,0x1a2e3a,Math.PI/2],[-15,55,0x3a1a28,0.05],
-      [5.8,132,0x553c22,-0.12],[-6.2,168,0x253852,0.2]] as number[][]).forEach(([x,z,color,rot], index) => {
+      [5.8,132,0x553c22,-0.12],[-6.2,168,0x253852,0.2],[-122,-156,0x27495c,0],
+      [122,-112,0x5a3226,0],[-122,-44,0x263f2b,0],[122,36,0x253852,0],[-96,184,0x553c22,0],
+      [-12,-184,0x4a2a1e,0],[72,184,0x1e4a6e,0],[122,148,0x2a3f22,0]] as number[][]).forEach(([x,z,color], index) => {
       const route = roadVehicleRoute(x, z);
       const car = createSedan(color);
-      car.rotation.y = route.axis === "x" ? Math.PI / 2 : rot;
-
-      const position = route.axis === "x"
-        ? new THREE.Vector3(route.progress, surfaceHeight(route.progress, route.lane) + VEHICLE_CLEARANCE, route.lane)
-        : new THREE.Vector3(route.lane, surfaceHeight(route.lane, route.progress) + VEHICLE_CLEARANCE, route.progress);
+      const trafficPath = trafficPaths[index % trafficPaths.length];
+      const direction = trafficPath.direction;
+      const path = trafficPath.points.map((point) => point.clone());
+      const pathIndex = nearestPathIndex(path, x, z);
+      const position = path[pathIndex].clone();
+      const nextPoint = path[(pathIndex + direction + path.length) % path.length];
+      const initialForward = nextPoint.clone().sub(position);
+      initialForward.y = 0;
+      car.rotation.y = yawFromVelocity(initialForward);
       car.position.copy(position);
       scene.add(car);
 
-      const obstacle = { position: position.clone(), radius: 2.6 };
+      const obstacle = {
+        position: position.clone(),
+        radius: 2.18,
+        dynamic: true,
+        halfExtents: new THREE.Vector2(1.08, 2.18),
+        yaw: car.rotation.y,
+      };
       obstacles.push(obstacle);
       trafficVehicles.push({
         group: car,
@@ -1057,9 +1550,18 @@ export default function DroneSimulation3D() {
         min: route.min,
         max: route.max,
         speed: 5.5 + (index % 4) * 1.4,
-        direction: index % 2 === 0 ? 1 : -1,
+        direction,
         verticalVelocity: 0,
         velocity: new THREE.Vector3(),
+        impactVelocity: new THREE.Vector3(),
+        mass: 1250 + (index % 4) * 160,
+        path,
+        pathIndex,
+        yaw: car.rotation.y,
+        steerAngle: 0,
+        laneOffset: 0,
+        yawOffset: 0,
+        yawVelocity: 0,
       });
     });
 
@@ -1082,6 +1584,24 @@ export default function DroneSimulation3D() {
       const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), debMat);
       rock.position.y = r * 0.42; rock.scale.y = 0.5; rock.castShadow = true;
       addObs(rock, openPosition(x, z, r + 0.9), r + 0.9);
+    });
+
+    // Ground eVTOL landing pads in open areas
+    ([
+      [-58,-178,0], [61,-132,1], [-74,134,2], [74,178,3], [103,-14,4], [-102,40,5],
+      [-154,-132,6], [154,-102,7], [-152,-12,8], [148,54,9], [-138,122,10], [138,142,11],
+      [-46,192,12], [42,-196,13], [18,108,14], [-18,-108,15],
+    ] as number[][]).forEach(([x, z, style]) => {
+      const radius = 6.4;
+      const pos = openPosition(x, z, radius);
+      const pad = createGroundLandingPad(style);
+      pad.rotation.y = (style % 3) * Math.PI / 6;
+      addObs(pad, pos, radius);
+      rooftopPads.push({
+        position: new THREE.Vector3(pos.x, pos.y + EVTOL_LANDING_CLEARANCE, pos.z),
+        yaw: pad.rotation.y,
+        kind: "GROUND",
+      });
     });
 
     // Scan lines
@@ -1127,9 +1647,68 @@ export default function DroneSimulation3D() {
       scene.add(group);
       return rig;
     });
+    const evtolHorizonPoint = (index: number, outbound = false) => {
+      const side = outbound ? -1 : 1;
+      const angle = -0.95 + index * 0.22 + (outbound ? Math.PI : 0);
+      return new THREE.Vector3(
+        Math.sin(angle) * 178,
+        34 + (index % 4) * 2.4,
+        side * (238 + (index % 3) * 18)
+      );
+    };
+    const groundPadIndices = rooftopPads
+      .map((pad, index) => ({ pad, index }))
+      .filter(({ pad }) => pad.kind === "GROUND")
+      .map(({ index }) => index);
+    const rooftopPadIndices = rooftopPads
+      .map((pad, index) => ({ pad, index }))
+      .filter(({ pad }) => pad.kind === "ROOFTOP")
+      .map(({ index }) => index);
+    const chooseEvtolPadIndex = (evtolIndex: number, cycle = 0) => {
+      const useGround = groundPadIndices.length > 0 && ((evtolIndex + cycle) % 8 !== 0 || rooftopPadIndices.length === 0);
+      const candidates = useGround ? groundPadIndices : rooftopPadIndices.length > 0 ? rooftopPadIndices : groundPadIndices;
+      return candidates[(evtolIndex * 5 + cycle * 3) % Math.max(1, candidates.length)] ?? 0;
+    };
+    const evtols: EvtolFlightRig[] = Array.from({ length: EVTOL_FLEET_SIZE }, (_, i) => {
+      const rig = createLargeEvtol() as EvtolFlightRig;
+      const padIndex = chooseEvtolPadIndex(i);
+      const pad = rooftopPads[padIndex] ?? { position: new THREE.Vector3(0, 16, 0), yaw: 0 };
+      const inbound = evtolHorizonPoint(i);
+      const outbound = evtolHorizonPoint(i + 4, true);
+      const hoverPoint = pad.position.clone().add(new THREE.Vector3(
+        Math.sin(i * 1.7) * 2.6,
+        10 + (i % 3) * 1.4,
+        Math.cos(i * 1.7) * 2.6
+      ));
+      const cycle = i % 6;
+      rig.state = cycle === 0 ? "INBOUND" : cycle === 1 ? "DESCEND" : cycle === 2 ? "LANDED" : cycle === 3 ? "TAKEOFF" : "OUTBOUND";
+      rig.padIndex = padIndex;
+      rig.horizonIn = inbound;
+      rig.horizonOut = outbound;
+      rig.hoverPoint = hoverPoint;
+      rig.timer = cycle === 2 ? i * 0.22 : 0;
+      rig.phase = i * 0.73;
+      rig.cruiseSpeed = 13.5 + (i % 5) * 1.45;
+      rig.cycles = 0;
+
+      const start = rig.state === "INBOUND"
+        ? inbound.clone().lerp(hoverPoint, 0.25 + (i % 3) * 0.18)
+        : rig.state === "DESCEND"
+          ? hoverPoint.clone().lerp(pad.position, 0.35)
+          : rig.state === "LANDED"
+            ? pad.position.clone()
+            : rig.state === "TAKEOFF"
+              ? pad.position.clone().lerp(hoverPoint, 0.5)
+              : hoverPoint.clone().lerp(outbound, 0.3 + (i % 2) * 0.22);
+      rig.group.position.copy(start);
+      rig.group.rotation.y = pad.yaw;
+      rig.group.scale.setScalar(0.69);
+      scene.add(rig.group);
+      return rig;
+    });
+
     const getVehicleYaw = (vehicle: TrafficVehicle) => {
-      if (vehicle.axis === "x") return vehicle.direction > 0 ? Math.PI / 2 : -Math.PI / 2;
-      return vehicle.direction > 0 ? 0 : Math.PI;
+      return vehicle.yaw;
     };
     const assignLogisticsMission = (droneIndex: number) => {
       if (droneIndex < 0) return;
@@ -1157,8 +1736,48 @@ export default function DroneSimulation3D() {
     const keys = new Set<string>();
     const onKeyDown = (e: KeyboardEvent) => keys.add(e.key.toLowerCase());
     const onKeyUp   = (e: KeyboardEvent) => keys.delete(e.key.toLowerCase());
+    const orbit = {
+      dragging: false,
+      lastX: 0,
+      lastY: 0,
+      yaw: -0.65,
+      pitch: 0.58,
+      distance: 34,
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (controlsRef.current.cameraMode !== "ORBIT") return;
+      orbit.dragging = true;
+      orbit.lastX = e.clientX;
+      orbit.lastY = e.clientY;
+      renderer.domElement.setPointerCapture(e.pointerId);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!orbit.dragging) return;
+      const dx = e.clientX - orbit.lastX;
+      const dy = e.clientY - orbit.lastY;
+      orbit.lastX = e.clientX;
+      orbit.lastY = e.clientY;
+      orbit.yaw -= dx * 0.006;
+      orbit.pitch = THREE.MathUtils.clamp(orbit.pitch + dy * 0.004, 0.18, 1.25);
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      orbit.dragging = false;
+      if (renderer.domElement.hasPointerCapture(e.pointerId)) {
+        renderer.domElement.releasePointerCapture(e.pointerId);
+      }
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (controlsRef.current.cameraMode !== "ORBIT") return;
+      e.preventDefault();
+      orbit.distance = THREE.MathUtils.clamp(orbit.distance + e.deltaY * 0.025, 16, 82);
+    };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup",   onKeyUp);
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointermove", onPointerMove);
+    renderer.domElement.addEventListener("pointerup", onPointerUp);
+    renderer.domElement.addEventListener("pointercancel", onPointerUp);
+    renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
     // ── Resize ───────────────────────────────────────────────────────────────
     const resize = () => {
@@ -1246,39 +1865,115 @@ export default function DroneSimulation3D() {
         .addScaledVector(residual, beta / Math.max(dt, 0.001))
         .lerp(measuredVelocity, 0.18);
     };
-    const placeTrafficVehicle = (vehicle: TrafficVehicle, index: number, t: number, dt: number, updateVelocity = true) => {
-      const previousPosition = vehicle.group.position.clone();
-      const wobble = Math.sin(t * 1.4 + index) * 0.08;
+    const trafficRouteVelocity = (vehicle: TrafficVehicle) => {
+      return new THREE.Vector3(-Math.sin(vehicle.yaw), 0, -Math.cos(vehicle.yaw)).multiplyScalar(vehicle.speed);
+    };
+    const applyTrafficImpulse = (
+      vehicle: TrafficVehicle,
+      impulse: THREE.Vector3,
+      contactNormal: THREE.Vector3,
+      contactOffset: THREE.Vector3
+    ) => {
+      const invMass = 1 / vehicle.mass;
+      vehicle.impactVelocity.addScaledVector(impulse, invMass);
 
-      if (vehicle.axis === "x") {
-        const x = vehicle.progress;
-        const z = vehicle.lane + wobble;
-        const yaw = vehicle.direction > 0 ? Math.PI / 2 : -Math.PI / 2;
-        const surface = stepSuspension(
-          vehicle.group.position.y,
-          vehicle.verticalVelocity,
-          surfaceHeight(x, z) + VEHICLE_CLEARANCE,
-          dt
-        );
-        vehicle.verticalVelocity = surface.verticalVelocity;
-        vehicle.group.position.set(x, surface.y, z);
-        vehicle.group.rotation.copy(terrainAdjustedEuler(yaw, x, z));
+      const laneNormal = new THREE.Vector3(Math.cos(vehicle.yaw), 0, -Math.sin(vehicle.yaw));
+      vehicle.laneOffset += laneNormal.dot(impulse) * invMass * 0.16;
+      vehicle.yawVelocity += contactOffset.cross(impulse).y * invMass * 0.09;
+
+    };
+    const vehicleRoverContact = (vehicle: TrafficVehicle, roverPosition: THREE.Vector3, roverRadius: number) => {
+      const toRover = roverPosition.clone().sub(vehicle.group.position);
+      toRover.y = 0;
+      const yaw = vehicle.yaw + vehicle.yawOffset;
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const localX = toRover.dot(right);
+      const localZ = toRover.dot(forward);
+      const halfWidth = 1.08;
+      const halfLength = 2.18;
+      const closestX = THREE.MathUtils.clamp(localX, -halfWidth, halfWidth);
+      const closestZ = THREE.MathUtils.clamp(localZ, -halfLength, halfLength);
+      const dx = localX - closestX;
+      const dz = localZ - closestZ;
+      const distanceSq = dx * dx + dz * dz;
+
+      if (distanceSq > roverRadius * roverRadius) return null;
+
+      let normal: THREE.Vector3;
+      let distance = Math.sqrt(distanceSq);
+      let penetration = roverRadius - distance;
+      if (distance > 0.001) {
+        normal = right.clone().multiplyScalar(dx / distance).addScaledVector(forward, dz / distance).normalize();
       } else {
-        const x = vehicle.lane + wobble;
-        const z = vehicle.progress;
-        const yaw = vehicle.direction > 0 ? 0 : Math.PI;
-        const surface = stepSuspension(
-          vehicle.group.position.y,
-          vehicle.verticalVelocity,
-          surfaceHeight(x, z) + VEHICLE_CLEARANCE,
-          dt
-        );
-        vehicle.verticalVelocity = surface.verticalVelocity;
-        vehicle.group.position.set(x, surface.y, z);
-        vehicle.group.rotation.copy(terrainAdjustedEuler(yaw, x, z));
+        const sideGap = halfWidth - Math.abs(localX);
+        const endGap = halfLength - Math.abs(localZ);
+        if (sideGap < endGap) {
+          normal = right.clone().multiplyScalar(localX >= 0 ? 1 : -1);
+          distance = -sideGap;
+          penetration = roverRadius + sideGap;
+        } else {
+          normal = forward.clone().multiplyScalar(localZ >= 0 ? 1 : -1);
+          distance = -endGap;
+          penetration = roverRadius + endGap;
+        }
       }
 
+      return {
+        distance: Math.max(distance, 0),
+        normal,
+        penetration,
+      };
+    };
+    const updateTrafficVehicle = (vehicle: TrafficVehicle, dt: number, updateVelocity = true) => {
+      const previousPosition = vehicle.group.position.clone();
+      const laneNormal = new THREE.Vector3(Math.cos(vehicle.yaw), 0, -Math.sin(vehicle.yaw));
+      vehicle.impactVelocity.multiplyScalar(Math.max(0, 1 - dt * 1.65));
+      vehicle.laneOffset += laneNormal.dot(vehicle.impactVelocity) * dt;
+      vehicle.laneOffset += -vehicle.laneOffset * Math.min(1, dt * 1.25);
+      vehicle.laneOffset = THREE.MathUtils.clamp(vehicle.laneOffset, -5.8, 5.8);
+      vehicle.yawVelocity *= Math.max(0, 1 - dt * 2.1);
+      vehicle.yawVelocity += -vehicle.yawOffset * dt * 4.2;
+      vehicle.yawOffset += vehicle.yawVelocity * dt;
+      vehicle.yawOffset = THREE.MathUtils.clamp(vehicle.yawOffset, -0.72, 0.72);
+
+      const targetIndex = (vehicle.pathIndex + vehicle.direction + vehicle.path.length) % vehicle.path.length;
+      const target = vehicle.path[targetIndex];
+      const toTarget = target.clone().sub(vehicle.group.position);
+      toTarget.y = 0;
+      if (toTarget.length() < 5.5) {
+        vehicle.pathIndex = targetIndex;
+      }
+      const nextTarget = vehicle.path[(vehicle.pathIndex + vehicle.direction + vehicle.path.length) % vehicle.path.length];
+      const desired = nextTarget.clone().sub(vehicle.group.position);
+      desired.y = 0;
+      const desiredYaw = yawFromVelocity(desired);
+      const yawError = THREE.MathUtils.euclideanModulo(desiredYaw - vehicle.yaw + Math.PI, Math.PI * 2) - Math.PI;
+      const maxSteer = 0.52;
+      const wheelBase = 2.65;
+      vehicle.steerAngle += (THREE.MathUtils.clamp(yawError * 0.85, -maxSteer, maxSteer) - vehicle.steerAngle) * Math.min(1, dt * 4.8);
+      const turnSlowdown = 1 - Math.min(0.42, Math.abs(vehicle.steerAngle) / maxSteer * 0.34);
+      const forwardSpeed = vehicle.speed * turnSlowdown;
+      if (Math.abs(yawError) > Math.PI * 0.58 && toTarget.length() < 8.5) {
+        vehicle.pathIndex = targetIndex;
+      }
+      vehicle.yaw += (forwardSpeed / wheelBase) * Math.tan(vehicle.steerAngle) * dt;
+      const forward = new THREE.Vector3(-Math.sin(vehicle.yaw), 0, -Math.cos(vehicle.yaw));
+      vehicle.group.position.addScaledVector(forward, forwardSpeed * dt);
+      vehicle.group.position.addScaledVector(vehicle.impactVelocity, dt);
+      vehicle.group.position.addScaledVector(new THREE.Vector3(Math.cos(vehicle.yaw), 0, -Math.sin(vehicle.yaw)), vehicle.laneOffset * 0.08 * dt);
+      const surface = stepSuspension(
+        vehicle.group.position.y,
+        vehicle.verticalVelocity,
+        surfaceHeight(vehicle.group.position.x, vehicle.group.position.z) + VEHICLE_CLEARANCE,
+        dt
+      );
+      vehicle.group.position.y = surface.y;
+      vehicle.verticalVelocity = surface.verticalVelocity;
+      vehicle.group.rotation.copy(terrainAdjustedEuler(vehicle.yaw + vehicle.yawOffset, vehicle.group.position.x, vehicle.group.position.z));
+
       vehicle.obstacle.position.copy(vehicle.group.position);
+      vehicle.obstacle.yaw = vehicle.yaw + vehicle.yawOffset;
       if (updateVelocity) {
         vehicle.velocity.copy(vehicle.group.position).sub(previousPosition).divideScalar(Math.max(dt, 0.001));
       }
@@ -1321,21 +2016,12 @@ export default function DroneSimulation3D() {
       steering += (st - steering) * dt * 7 * activeControls.roverSteering;
       roverYaw += steering * speed * dt * 0.13 * activeControls.roverSteering;
 
-      trafficVehicles.forEach((vehicle, index) => {
+      trafficVehicles.forEach((vehicle) => {
         if (!activeControls.trafficEnabled) {
           vehicle.velocity.set(0, 0, 0);
           return;
         }
-        vehicle.progress += vehicle.direction * vehicle.speed * dt;
-        if (vehicle.progress > vehicle.max) {
-          vehicle.progress = vehicle.max;
-          vehicle.direction = -1;
-        } else if (vehicle.progress < vehicle.min) {
-          vehicle.progress = vehicle.min;
-          vehicle.direction = 1;
-        }
-
-        placeTrafficVehicle(vehicle, index, t, dt);
+        updateTrafficVehicle(vehicle, dt);
       });
 
       if (activeControls.trafficEnabled) {
@@ -1346,14 +2032,36 @@ export default function DroneSimulation3D() {
             const distance = a.obstacle.position.distanceTo(b.obstacle.position);
             const minDistance = a.obstacle.radius + b.obstacle.radius + 0.9;
 
-            if (distance < minDistance) {
-              a.direction = a.direction === 1 ? -1 : 1;
-              b.direction = b.direction === 1 ? -1 : 1;
-              a.progress = THREE.MathUtils.clamp(a.progress + a.direction * 2.2, a.min, a.max);
-              b.progress = THREE.MathUtils.clamp(b.progress + b.direction * 2.2, b.min, b.max);
-              placeTrafficVehicle(a, i, t, dt, false);
-              placeTrafficVehicle(b, j, t, dt, false);
+          if (distance < minDistance) {
+            const normal = a.obstacle.position.clone().sub(b.obstacle.position);
+            normal.y = 0;
+            if (normal.lengthSq() < 0.001) normal.set(1, 0, 0);
+            normal.normalize();
+
+            const penetration = minDistance - distance;
+            const relativeVelocity = trafficRouteVelocity(a).add(a.impactVelocity)
+              .sub(trafficRouteVelocity(b).add(b.impactVelocity));
+            const closingVelocity = relativeVelocity.dot(normal);
+            const inverseMassSum = (1 / a.mass) + (1 / b.mass);
+
+            if (closingVelocity < 0) {
+              const restitution = 0.08;
+              const normalImpulseMagnitude = -(1 + restitution) * closingVelocity / inverseMassSum;
+              const normalImpulse = normal.clone().multiplyScalar(normalImpulseMagnitude);
+              const tangent = relativeVelocity.clone().sub(normal.clone().multiplyScalar(closingVelocity));
+              if (tangent.lengthSq() > 0.001) tangent.normalize();
+              const frictionImpulse = tangent.multiplyScalar(-Math.min(normalImpulseMagnitude * 0.42, Math.abs(relativeVelocity.dot(tangent)) / inverseMassSum));
+              const impulse = normalImpulse.add(frictionImpulse);
+
+              applyTrafficImpulse(a, impulse, normal, a.group.position.clone().sub(b.group.position));
+              applyTrafficImpulse(b, impulse.clone().negate(), normal.clone().negate(), b.group.position.clone().sub(a.group.position));
             }
+
+            a.group.position.addScaledVector(normal, penetration * 0.35);
+            b.group.position.addScaledVector(normal, -penetration * 0.35);
+            updateTrafficVehicle(a, dt, false);
+            updateTrafficVehicle(b, dt, false);
+          }
           }
         }
       }
@@ -1361,8 +2069,49 @@ export default function DroneSimulation3D() {
       previousRoverPosition.copy(rover.position);
       const dir = new THREE.Vector3(-Math.sin(roverYaw), 0, -Math.cos(roverYaw));
       rover.position.addScaledVector(dir, speed * dt);
-      const fix = resolveCollision(rover.position, obstacles, 1.72);
+      const fix = resolveCollision(rover.position, obstacles, 1.32);
       if (fix.lengthSq() > 0) { rover.position.add(fix); speed *= -0.28; }
+      if (activeControls.trafficEnabled) {
+        trafficVehicles.forEach((vehicle) => {
+          const contact = vehicleRoverContact(vehicle, rover.position, 1.18);
+
+          if (contact) {
+            const normal = contact.normal;
+            const penetration = contact.penetration;
+            const roverForward = new THREE.Vector3(-Math.sin(roverYaw), 0, -Math.cos(roverYaw));
+            const roverVelocity = roverForward.clone().multiplyScalar(speed);
+            const vehicleVelocity = trafficRouteVelocity(vehicle).add(vehicle.impactVelocity);
+            const relativeVelocity = roverVelocity.clone().sub(vehicleVelocity);
+            const closingVelocity = relativeVelocity.dot(normal);
+            const vehicleInvMass = 1 / vehicle.mass;
+            const roverInvMass = 1 / ROVER_MASS;
+            const inverseMassSum = vehicleInvMass + roverInvMass;
+            const correction = Math.max(0, penetration + 0.08);
+
+            rover.position.addScaledVector(normal, correction * (roverInvMass / inverseMassSum));
+            vehicle.group.position.addScaledVector(normal, -correction * (vehicleInvMass / inverseMassSum));
+            vehicle.impactVelocity.addScaledVector(normal, -Math.min(4.2, penetration * 2.8));
+            if (closingVelocity < 0) {
+              const restitution = 0.06;
+              const normalImpulseMagnitude = -(1 + restitution) * closingVelocity / inverseMassSum;
+              const normalImpulse = normal.clone().multiplyScalar(normalImpulseMagnitude);
+              const tangent = relativeVelocity.clone().sub(normal.clone().multiplyScalar(closingVelocity));
+              if (tangent.lengthSq() > 0.001) tangent.normalize();
+              const frictionImpulse = tangent.multiplyScalar(-Math.min(normalImpulseMagnitude * 0.55, Math.abs(relativeVelocity.dot(tangent)) / inverseMassSum));
+              const impulse = normalImpulse.add(frictionImpulse);
+
+              applyTrafficImpulse(vehicle, impulse.clone().negate(), normal.clone().negate(), vehicle.group.position.clone().sub(rover.position));
+              const newRoverVelocity = roverVelocity.addScaledVector(impulse, roverInvMass);
+              speed = THREE.MathUtils.clamp(newRoverVelocity.dot(roverForward), -activeControls.roverMaxSpeed * 0.45, activeControls.roverMaxSpeed);
+              steering += THREE.MathUtils.clamp(newRoverVelocity.cross(normal).y * 0.018, -0.35, 0.35);
+            } else {
+              const intoContactSpeed = speed * roverForward.dot(normal);
+              if (intoContactSpeed < 0) speed -= intoContactSpeed * 0.85;
+            }
+            updateTrafficVehicle(vehicle, dt, false);
+          }
+        });
+      }
       rover.position.x = Math.max(-205, Math.min(205, rover.position.x));
       rover.position.z = Math.max(-205, Math.min(205, rover.position.z));
       const roverSurface = stepSuspension(
@@ -1380,6 +2129,91 @@ export default function DroneSimulation3D() {
       let dockingSlotOwner = drones.findIndex(
         (candidate) => candidate.role === "LOGISTICS" && candidate.logisticState === "DOCK"
       );
+
+      evtols.forEach((evtol, evtolIndex) => {
+        const pad = rooftopPads[evtol.padIndex] ?? { position: new THREE.Vector3(0, 16, 0), yaw: 0 };
+        let target = evtol.hoverPoint;
+        let speedLimit = evtol.cruiseSpeed;
+        let targetBank = 0;
+
+        if (evtol.state === "INBOUND") {
+          target = evtol.hoverPoint;
+          speedLimit = evtol.cruiseSpeed;
+          if (evtol.group.position.distanceTo(target) < 3.4) {
+            evtol.state = "DESCEND";
+            evtol.timer = 0;
+          }
+        } else if (evtol.state === "DESCEND") {
+          target = pad.position;
+          speedLimit = 4.2;
+          if (evtol.group.position.distanceTo(target) < 0.55) {
+            evtol.group.position.copy(target);
+            evtol.state = "LANDED";
+            evtol.timer = 0;
+          }
+        } else if (evtol.state === "LANDED") {
+          target = pad.position;
+          speedLimit = 0;
+          evtol.group.position.copy(target);
+          evtol.group.rotation.y = THREE.MathUtils.lerp(evtol.group.rotation.y, pad.yaw, THREE.MathUtils.clamp(dt * 3, 0, 1));
+          evtol.timer += dt;
+          if (evtol.timer > 4.6 + (evtolIndex % 4) * 0.7) {
+            evtol.state = "TAKEOFF";
+            evtol.timer = 0;
+          }
+        } else if (evtol.state === "TAKEOFF") {
+          target = evtol.hoverPoint;
+          speedLimit = 5.8;
+          if (evtol.group.position.distanceTo(target) < 2.2) {
+            evtol.state = "OUTBOUND";
+            evtol.timer = 0;
+          }
+        } else {
+          target = evtol.horizonOut;
+          speedLimit = evtol.cruiseSpeed + 2.2;
+          if (evtol.group.position.distanceTo(target) < 9) {
+            evtol.cycles += 1;
+            const nextPadIndex = chooseEvtolPadIndex(evtolIndex, evtol.cycles);
+            const nextPad = rooftopPads[nextPadIndex] ?? pad;
+            evtol.padIndex = nextPadIndex;
+            evtol.horizonIn.copy(evtolHorizonPoint(evtolIndex + Math.floor(t), false));
+            evtol.horizonOut.copy(evtolHorizonPoint(evtolIndex + 4 + Math.floor(t * 0.5), true));
+            evtol.hoverPoint.copy(nextPad.position).add(new THREE.Vector3(
+              Math.sin(t + evtolIndex) * 2.6,
+              10 + (evtolIndex % 3) * 1.4,
+              Math.cos(t + evtolIndex) * 2.6
+            ));
+            evtol.group.position.copy(evtol.horizonIn);
+            evtol.state = "INBOUND";
+            evtol.timer = 0;
+          }
+        }
+
+        const delta = target.clone().sub(evtol.group.position);
+        if (speedLimit > 0 && delta.lengthSq() > 0.0001) {
+          const step = Math.min(delta.length(), speedLimit * dt);
+          evtol.group.position.addScaledVector(delta.normalize(), step);
+          const heading = Math.atan2(-delta.x, -delta.z);
+          const yawError = THREE.MathUtils.euclideanModulo(heading - evtol.group.rotation.y + Math.PI, Math.PI * 2) - Math.PI;
+          evtol.group.rotation.y += yawError * THREE.MathUtils.clamp(dt * 2.8, 0, 1);
+          targetBank = THREE.MathUtils.clamp(-yawError * 0.34, -0.22, 0.22);
+        }
+
+        const liftPulse = evtol.state === "LANDED" ? 0 : Math.sin(t * 1.25 + evtol.phase) * 0.04;
+        evtol.group.rotation.x = THREE.MathUtils.lerp(evtol.group.rotation.x, liftPulse, THREE.MathUtils.clamp(dt * 2.2, 0, 1));
+        evtol.group.rotation.z = THREE.MathUtils.lerp(evtol.group.rotation.z, targetBank, THREE.MathUtils.clamp(dt * 2.6, 0, 1));
+        evtol.rotors.forEach((rotor, rotorIndex) => {
+          const spin = evtol.state === "LANDED" ? 12 : 46;
+          rotor.rotation.y += dt * (rotorIndex % 2 === 0 ? spin : -spin * 1.08);
+        });
+        evtol.navLightMats.forEach((mat, lightIndex) => {
+          mat.emissiveIntensity = 1.8 + 1.4 * (0.5 + 0.5 * Math.sin(t * 3.2 + lightIndex * Math.PI + evtolIndex));
+        });
+        evtol.beaconMat.emissiveIntensity = 1.8 + 4.4 * Math.max(0, Math.sin(t * 5.8 + evtolIndex * 0.45));
+        const beamActive = evtol.state === "DESCEND" || evtol.state === "LANDED";
+        evtol.beam.visible = beamActive;
+        evtol.beam.material.opacity = beamActive ? 0.18 : 0.08;
+      });
 
       drones.forEach((drone, i) => {
         const ph  = t * drone.speed + drone.phase;
@@ -1575,7 +2409,12 @@ export default function DroneSimulation3D() {
       if (activeControls.cameraMode === "TOP") {
         camTarget.set(rover.position.x, rover.position.y + 62, rover.position.z + 0.01);
       } else if (activeControls.cameraMode === "ORBIT") {
-        camOff.set(Math.sin(t * 0.18) * 31, 19, Math.cos(t * 0.18) * 31);
+        const horizontalDistance = Math.cos(orbit.pitch) * orbit.distance;
+        camOff.set(
+          Math.sin(orbit.yaw) * horizontalDistance,
+          Math.sin(orbit.pitch) * orbit.distance,
+          Math.cos(orbit.yaw) * horizontalDistance
+        );
         camTarget.copy(rover.position).add(camOff);
       } else {
         camOff.set(0, 9.2, 16).applyAxisAngle(new THREE.Vector3(0, 1, 0), roverYaw);
@@ -1597,6 +2436,11 @@ export default function DroneSimulation3D() {
       cancelAnimationFrame(frameId);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup",   onKeyUp);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("pointermove", onPointerMove);
+      renderer.domElement.removeEventListener("pointerup", onPointerUp);
+      renderer.domElement.removeEventListener("pointercancel", onPointerUp);
+      renderer.domElement.removeEventListener("wheel", onWheel);
       ro.disconnect();
       scene.traverse(obj => {
         const mesh = obj as THREE.Mesh;
@@ -1629,4 +2473,55 @@ export default function DroneSimulation3D() {
       />
     </div>
   );
+}
+
+function loopProgressFromPoint(x: number, z: number, laneOffset = 0) {
+  const halfX = LOOP_ROAD_HALF_X + laneOffset;
+  const halfZ = LOOP_ROAD_HALF_Z + laneOffset;
+  const width = halfX * 2;
+  const depth = halfZ * 2;
+
+  if (Math.abs(z + halfZ) <= Math.abs(x - halfX) && Math.abs(z + halfZ) <= Math.abs(z - halfZ)) {
+    return THREE.MathUtils.clamp(x + halfX, 0, width);
+  }
+  if (Math.abs(x - halfX) < Math.abs(x + halfX) && Math.abs(x - halfX) <= Math.abs(z - halfZ)) {
+    return width + THREE.MathUtils.clamp(z + halfZ, 0, depth);
+  }
+  if (Math.abs(z - halfZ) < Math.abs(z + halfZ)) {
+    return width + depth + THREE.MathUtils.clamp(halfX - x, 0, width);
+  }
+  return width + depth + width + THREE.MathUtils.clamp(halfZ - z, 0, depth);
+}
+
+function yawFromVelocity(velocity: THREE.Vector3) {
+  if (velocity.lengthSq() < 0.0001) return 0;
+  return Math.atan2(-velocity.x, -velocity.z);
+}
+
+function loopRouteAt(progress: number, laneOffset = 0) {
+  const halfX = LOOP_ROAD_HALF_X + laneOffset;
+  const halfZ = LOOP_ROAD_HALF_Z + laneOffset;
+  const width = halfX * 2;
+  const depth = halfZ * 2;
+  const perimeter = width * 2 + depth * 2;
+  let p = THREE.MathUtils.euclideanModulo(progress, perimeter);
+  const position = new THREE.Vector3();
+  const tangent = new THREE.Vector3();
+
+  if (p < width) {
+    position.set(-halfX + p, ROAD_SURFACE_Y + VEHICLE_CLEARANCE, -halfZ);
+    tangent.set(1, 0, 0);
+  } else if ((p -= width) < depth) {
+    position.set(halfX, ROAD_SURFACE_Y + VEHICLE_CLEARANCE, -halfZ + p);
+    tangent.set(0, 0, 1);
+  } else if ((p -= depth) < width) {
+    position.set(halfX - p, ROAD_SURFACE_Y + VEHICLE_CLEARANCE, halfZ);
+    tangent.set(-1, 0, 0);
+  } else {
+    p -= width;
+    position.set(-halfX, ROAD_SURFACE_Y + VEHICLE_CLEARANCE, halfZ - p);
+    tangent.set(0, 0, -1);
+  }
+
+  return { position, tangent, perimeter };
 }
