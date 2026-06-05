@@ -1,7 +1,7 @@
 import DroneSimulation from "./components/DroneSimulation";
-import DroneSimulation3D from "./components/DroneSimulation3D";
 import HeroField from "./components/HeroField";
 import Navbar from "./components/Navbar";
+import WebGLShowcase from "./components/WebGLShowcase";
 
 
 
@@ -53,9 +53,7 @@ export default function Home() {
         </section>
 
       {/* ================= WEBGL EXPERIENCE ================= */}
-      <section className="relative min-h-screen overflow-hidden bg-black">
-        <DroneSimulation3D />
-      </section>
+      <WebGLShowcase />
 
 
 

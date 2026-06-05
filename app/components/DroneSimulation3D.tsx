@@ -693,7 +693,6 @@ function createLargeEvtol(): EvtolRig {
     })
   );
   beam.position.set(0, -4.2, -3.25);
-  beam.rotation.x = Math.PI;
   beam.renderOrder = 5;
   g.add(beam);
 
@@ -1217,8 +1216,9 @@ function HUD({
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function DroneSimulation3D() {
+export default function DroneSimulation3D({ active = true }: { active?: boolean }) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef(active);
   const [hud, setHud] = useState<HudState>({ speed: 0, beams: 0, nearest: 99 });
   const [controls, setControls] = useState<SimulationControls>({
     paused: false,
@@ -1236,6 +1236,10 @@ export default function DroneSimulation3D() {
   useEffect(() => {
     controlsRef.current = controls;
   }, [controls]);
+
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -1982,6 +1986,7 @@ export default function DroneSimulation3D() {
     const animate = () => {
       frameId = requestAnimationFrame(animate);
       const rawDt = Math.min(clock.getDelta(), 0.04);
+      if (!activeRef.current) return;
       const activeControls = controlsRef.current;
       const dt = activeControls.paused ? 0 : rawDt * activeControls.simSpeed;
       const t  = clock.elapsedTime;
