@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "KTM Core",
+  title: "KTMcore | Mechanical CAD, Edge Hardware, Civil CAD, and Robotic Simulation",
   description:
-    "Autonomous drone systems, AI perception, and simulation-first engineering.",
+    "Mechanical CAD design, SolidWorks parts and assemblies, edge-device and robotics hardware development, civil CAD support, and advanced robotic simulation.",
 };
 
 export default function RootLayout({

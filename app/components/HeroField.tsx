@@ -78,10 +78,10 @@ export default function HeroField() {
 
     // Professional muted color
     const droneColor = {
-      primary: "#1a2332",
-      secondary: "#2a3444",
-      accent: "#4a90a4",
-      glow: "#5ba3b8"
+      primary: "#0b2033",
+      secondary: "#17324d",
+      accent: "#176b87",
+      glow: "#0e7490"
     };
 
     // Generate patrol waypoints (rectangular or circular paths)
@@ -1098,19 +1098,12 @@ export default function HeroField() {
     const animate = () => {
       const dt = 0.016;
 
-      // Background
-      const bgGradient = ctx.createRadialGradient(
-        canvas.width / 2, canvas.height / 2, 0,
-        canvas.width / 2, canvas.height / 2, canvas.width * 0.8
-      );
-      bgGradient.addColorStop(0, "#0a1219");
-      bgGradient.addColorStop(0.5, "#070d12");
-      bgGradient.addColorStop(1, "#030608");
-      ctx.fillStyle = bgGradient;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Keep the canvas transparent so the aircraft sit naturally over the
+      // warm website hero instead of bringing back a dark rectangular field.
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // Grid
-      ctx.strokeStyle = "rgba(74, 144, 164, 0.025)";
+      ctx.strokeStyle = "rgba(23, 50, 77, 0.075)";
       ctx.lineWidth = 1;
       const gridSize = 80;
       for (let x = 0; x < canvas.width; x += gridSize) {
@@ -1179,7 +1172,7 @@ export default function HeroField() {
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 z-0"
+      className="absolute inset-0 z-[1]"
       style={{ cursor: "none" }}
     />
   );

@@ -1,15 +1,20 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import KTMCoreLogo from "./KTMCoreLogo";
 
 const NAV_LINKS = [
-  { label: "Work", href: "#work" },
-  { label: "Technology", href: "#tech" },
-  { label: "Simulation", href: "#simulation" },
-  { label: "Contact", href: "#contact" },
+  { label: "Home", href: "/" },
+  { label: "Services", href: "/services" },
+  { label: "Simulations", href: "/simulations" },
+  { label: "Portfolio", href: "/portfolio" },
+  { label: "Contact", href: "/contact" },
 ];
 
 export default function Navbar() {
+  const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -24,8 +29,8 @@ export default function Navbar() {
       className={[
         "fixed top-0 left-0 w-full z-50 transition-all",
         scrolled
-          ? "bg-black/80 backdrop-blur-md border-b border-gray-800"
-          : "bg-black/50 backdrop-blur-md",
+          ? "bg-[#fbfaf6]/95 backdrop-blur-md border-b border-[#d7e1df] shadow-sm"
+          : "bg-[#fbfaf6]/85 backdrop-blur-md",
       ].join(" ")}
     >
       <nav
@@ -33,70 +38,81 @@ export default function Navbar() {
         aria-label="Main navigation"
       >
         {/* Logo */}
-        <a
-          href="#"
-          className="text-lg font-semibold tracking-wide focus:outline-none focus:ring-2 focus:ring-cyan-400 rounded"
+        <Link
+          href="/"
+          aria-label="KTMCore home"
+          className="rounded text-[#17324d] focus:outline-none focus:ring-2 focus:ring-[#f47b63]"
         >
-          KTM<span className="text-cyan-400">Core</span>
-        </a>
+          <KTMCoreLogo className="h-12 w-[250px] max-w-[58vw]" />
+        </Link>
 
         {/* Desktop Nav */}
-        <div className="hidden md:flex items-center gap-8 text-sm text-gray-300">
-          {NAV_LINKS.map(link => (
-            <a
-              key={link.href}
-              href={link.href}
-              className="hover:text-white transition focus:outline-none focus:ring-2 focus:ring-cyan-400 rounded"
-            >
-              {link.label}
-            </a>
-          ))}
+        <div className="hidden lg:flex items-center gap-7 text-sm font-medium text-[#49657a]">
+          {NAV_LINKS.map((link) => {
+            const active = pathname === link.href;
+
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={[
+                  "transition focus:outline-none focus:ring-2 focus:ring-[#f47b63] rounded",
+                  active ? "text-[#176b87]" : "hover:text-[#17324d]",
+                ].join(" ")}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
         </div>
 
         {/* CTA + Mobile Toggle */}
         <div className="flex items-center gap-4">
-          <a
-            href="#contact"
-            className="hidden sm:inline-block px-4 py-2 text-sm border border-cyan-400 text-cyan-400 rounded-md hover:bg-cyan-400 hover:text-black transition focus:outline-none focus:ring-2 focus:ring-cyan-400"
+          <Link
+            href="/contact"
+            className="hidden rounded-full bg-[#f47b63] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-[#df654f] focus:outline-none focus:ring-2 focus:ring-[#f47b63] sm:inline-block"
           >
-            Get in Touch
-          </a>
+            Request a Quote
+          </Link>
 
           {/* Mobile Menu Button */}
           <button
-            onClick={() => setMenuOpen(prev => !prev)}
+            onClick={() => setMenuOpen((prev) => !prev)}
             aria-label="Toggle menu"
             aria-expanded={menuOpen}
-            className="md:hidden p-2 rounded focus:outline-none focus:ring-2 focus:ring-cyan-400"
+            className="rounded p-2 focus:outline-none focus:ring-2 focus:ring-[#f47b63] lg:hidden"
           >
-            <span className="block w-6 h-0.5 bg-gray-300 mb-1" />
-            <span className="block w-6 h-0.5 bg-gray-300 mb-1" />
-            <span className="block w-6 h-0.5 bg-gray-300" />
+            <span className="mb-1 block h-0.5 w-6 bg-[#17324d]" />
+            <span className="mb-1 block h-0.5 w-6 bg-[#17324d]" />
+            <span className="block h-0.5 w-6 bg-[#17324d]" />
           </button>
         </div>
       </nav>
 
       {/* Mobile Menu */}
       {menuOpen && (
-        <div className="md:hidden bg-black/95 border-t border-gray-800">
-          <div className="px-6 py-4 flex flex-col gap-4 text-sm text-gray-300">
-            {NAV_LINKS.map(link => (
-              <a
+        <div className="border-t border-[#d7e1df] bg-[#fbfaf6] lg:hidden">
+          <div className="flex flex-col gap-4 px-6 py-4 text-sm text-[#49657a]">
+            {NAV_LINKS.map((link) => (
+              <Link
                 key={link.href}
                 href={link.href}
                 onClick={() => setMenuOpen(false)}
-                className="hover:text-white transition"
+                className={[
+                  "transition",
+                  pathname === link.href ? "text-[#176b87]" : "hover:text-[#17324d]",
+                ].join(" ")}
               >
                 {link.label}
-              </a>
+              </Link>
             ))}
-            <a
-              href="#contact"
+            <Link
+              href="/contact"
               onClick={() => setMenuOpen(false)}
-              className="mt-2 inline-block px-4 py-2 text-center border border-cyan-400 text-cyan-400 rounded-md hover:bg-cyan-400 hover:text-black transition"
+              className="mt-2 inline-block rounded-full bg-[#f47b63] px-4 py-2 text-center font-semibold text-white transition hover:bg-[#df654f]"
             >
-              Get in Touch
-            </a>
+              Request a Quote
+            </Link>
           </div>
         </div>
       )}

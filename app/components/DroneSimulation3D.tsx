@@ -1219,6 +1219,7 @@ function HUD({
 export default function DroneSimulation3D({ active = true }: { active?: boolean }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef(active);
+  const [scenePlaying, setScenePlaying] = useState(false);
   const [hud, setHud] = useState<HudState>({ speed: 0, beams: 0, nearest: 99 });
   const [controls, setControls] = useState<SimulationControls>({
     paused: false,
@@ -1238,8 +1239,12 @@ export default function DroneSimulation3D({ active = true }: { active?: boolean 
   }, [controls]);
 
   useEffect(() => {
-    activeRef.current = active;
+    if (!active) setScenePlaying(false);
   }, [active]);
+
+  useEffect(() => {
+    activeRef.current = active && scenePlaying;
+  }, [active, scenePlaying]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -2476,6 +2481,18 @@ export default function DroneSimulation3D({ active = true }: { active?: boolean 
           commandsRef.current.reassignMissions = true;
         }}
       />
+      {!scenePlaying && (
+        <div className="pointer-events-auto absolute inset-0 z-20 flex items-center justify-center bg-black/48 backdrop-blur-sm">
+          <button
+            className="rounded-lg border border-cyan-300/70 bg-cyan-300 px-8 py-4 text-lg font-semibold text-black shadow-[0_0_38px_rgba(103,232,249,0.35)] transition hover:bg-cyan-200"
+            onClick={() => {
+              if (active) setScenePlaying(true);
+            }}
+          >
+            Play City Simulation
+          </button>
+        </div>
+      )}
     </div>
   );
 }

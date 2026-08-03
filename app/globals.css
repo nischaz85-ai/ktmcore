@@ -1,10 +1,18 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-  --site-font-sans: Arial, Helvetica, sans-serif;
+  --background: #fbfaf6;
+  --foreground: #17324d;
+  --site-font-sans: "Segoe UI", Aptos, Arial, sans-serif;
   --site-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --ink: #17324d;
+  --paper: #fbfaf6;
+  --blue: #176b87;
+  --sky: #dff3f7;
+  --coral: #f47b63;
+  --peach: #fff0e8;
+  --amber: #f2b84b;
+  --mint: #dff2df;
 }
 
 @theme inline {
@@ -14,15 +22,88 @@
   --font-mono: var(--site-font-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--site-font-sans);
+}
+
+::selection {
+  background: #f8c66a;
+  color: #17324d;
+}
+
+@keyframes pathfinder-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.pathfinder-panel {
+  animation: pathfinder-in 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pathfinder-panel {
+    animation: none;
+  }
+}
+
+@keyframes system-dash {
+  to { stroke-dashoffset: -34; }
+}
+
+.system-signal,
+.system-flow {
+  animation: system-dash 2.2s linear infinite;
+}
+
+/* Warm business-page skin: detailed pages share the friendly site identity
+   while simulation canvases remain purposefully high-contrast. */
+.business-page [class*="bg-slate-950"] {
+  background-color: #fbfaf6 !important;
+}
+
+.business-page [class*="bg-slate-900"] {
+  background-color: #ffffff !important;
+}
+
+.business-page [class*="bg-slate-50"] {
+  background-color: #fff0e8 !important;
+}
+
+.business-page .text-white {
+  color: #17324d !important;
+}
+
+.business-page [class*="text-slate-2"],
+.business-page [class*="text-slate-3"],
+.business-page [class*="text-slate-4"] {
+  color: #5c7284 !important;
+}
+
+.business-page [class*="text-cyan"] {
+  color: #176b87 !important;
+}
+
+.business-page [class*="border-slate"] {
+  border-color: #d7e1df !important;
+}
+
+.business-page article,
+.business-page form,
+.business-page [class*="rounded-md"] {
+  border-radius: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .system-signal,
+  .system-flow {
+    animation: none;
+  }
 }

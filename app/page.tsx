@@ -1,180 +1,67 @@
-import DroneSimulation from "./components/DroneSimulation";
+import CompanyPlanGallery from "./components/CompanyPlanGallery";
+import EngineeringPathfinder from "./components/EngineeringPathfinder";
+import EngineeringSystemsShowcase from "./components/EngineeringSystemsShowcase";
 import HeroField from "./components/HeroField";
 import Navbar from "./components/Navbar";
-import WebGLShowcase from "./components/WebGLShowcase";
+import SiteFooter from "./components/SiteFooter";
+import TechnicalDesignPreviews from "./components/TechnicalDesignPreviews";
 
-
-
+const proofPoints = [
+  "Make equipment easier to build, use, or maintain",
+  "Fit sensors, controls, and robotics into the real world",
+  "Coordinate plans before field problems get expensive",
+  "Use simulation when motion tells the story better",
+];
 
 export default function Home() {
   return (
-
-
-    
-    <main className="bg-black text-white">
+    <main className="min-h-screen bg-[#fbfaf6] text-[#17324d]">
       <Navbar />
-      
 
-      {/* ================= HERO ================= */}
-        <section className="relative min-h-screen flex items-center justify-center px-6 overflow-hidden bg-black">
+      <section className="relative flex min-h-[92svh] items-center overflow-hidden bg-[#f4eee2] px-6 pb-16 pt-28">
+        <HeroField />
+        <div className="absolute inset-0 bg-[linear-gradient(110deg,rgba(251,250,246,0.98),rgba(251,250,246,0.92)_48%,rgba(223,243,247,0.72))]" />
+        <div className="absolute -right-24 top-28 h-72 w-72 rounded-full bg-[#f47b63]/15 blur-3xl" />
+        <div className="absolute -left-20 bottom-16 h-64 w-64 rounded-full bg-[#f2b84b]/20 blur-3xl" />
 
-          {/* Animated field background */}
-          <HeroField />
-
-          {/* Soft vignette for depth */}
-          <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/20 to-black/60" />
-
-          {/* Content */}
-          <div className="relative z-10 max-w-5xl text-center backdrop-blur-sm">
-
-            <h1 className="text-5xl md:text-6xl font-bold mb-6 text-white
-              drop-shadow-[0_0_35px_rgba(0,200,255,0.25)]">
-              KTM Core
-            </h1>
-
-            <p className="text-xl md:text-2xl text-gray-300 mb-10 leading-relaxed">
-              Designing intelligent drone systems, autonomous software,
-              and AI-driven engineering solutions.
-            </p>
-
-            <div className="flex justify-center gap-6">
-              <a href="#work" className="px-8 py-3 bg-white text-black rounded-lg font-medium
-                hover:bg-gray-200 transition">
-                View Projects
-              </a>
-
-              <a href="#contact" className="px-8 py-3 border border-cyan-400 text-cyan-300 rounded-lg
-                hover:bg-cyan-400/10 transition">
-                Contact
-              </a>
+        <div className="relative z-10 mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:items-end">
+          <div>
+            <p className="mb-5 text-sm font-bold uppercase tracking-[0.2em] text-[#176b87]">Practical engineering for real-world work</p>
+            <h1 className="max-w-5xl text-4xl font-bold leading-[1.08] text-[#17324d] sm:text-5xl lg:text-6xl">Good engineering should make the next step feel obvious.</h1>
+            <p className="mt-6 max-w-2xl text-lg leading-8 text-[#49657a]">We help teams untangle equipment, hardware, automation, and site problems—then build the model, plan, prototype, or simulation that moves the work forward.</p>
+            <div className="mt-9 flex flex-col gap-3 sm:flex-row">
+              <a href="/services" className="inline-flex min-h-12 items-center justify-center rounded-full bg-[#176b87] px-7 font-semibold text-white shadow-lg shadow-[#176b87]/15 transition hover:-translate-y-0.5 hover:bg-[#12566d]">See How We Help</a>
+              <a href="/simulations" className="inline-flex min-h-12 items-center justify-center rounded-full border-2 border-[#f47b63] px-7 font-semibold text-[#c85440] transition hover:bg-[#fff0e8]">Try the Simulations</a>
             </div>
-
           </div>
-        </section>
 
-      {/* ================= WEBGL EXPERIENCE ================= */}
-      <WebGLShowcase />
-
-
-
-      {/* ================= DIVIDER ================= */}
-      <div className="h-px bg-gray-800 max-w-6xl mx-auto" />
-
-      {/* ================= WHAT WE BUILD ================= */}
-      <section id="work" className="py-24 px-6">
-        <div className="max-w-6xl mx-auto">
-          <h2 className="text-3xl font-semibold mb-12 text-center">
-            What We Build
-          </h2>
-
-          <div className="grid md:grid-cols-3 gap-10">
-            <Feature
-              title="Autonomous Drone Systems"
-              description="End-to-end UAV platforms integrating perception, control, and decision-making for real-world environments."
-            />
-            <Feature
-              title="AI & Perception"
-              description="Computer vision, sensor fusion, and machine intelligence for navigation, mapping, and situational awareness."
-            />
-            <Feature
-              title="Software & Simulation"
-              description="High-fidelity simulators, digital twins, and software pipelines for testing, validation, and deployment."
-            />
+          <div className="grid gap-0 overflow-hidden rounded-[1.5rem] border border-white/80 bg-white/85 p-2 shadow-2xl shadow-[#17324d]/10 backdrop-blur">
+            {proofPoints.map((point) => (
+              <div key={point} className="flex items-start gap-3 rounded-2xl px-4 py-3.5 transition hover:bg-[#fff0e8]">
+                <span className="mt-1.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#dff2df] text-xs font-bold text-[#28734c]">✓</span>
+                <p className="text-sm font-medium leading-6 text-[#334e64]">{point}</p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ================= TECHNOLOGY STACK ================= */}
-      <section id="tech" className="py-24 px-6 bg-gray-950">
-        <div className="max-w-6xl mx-auto">
-          <h2 className="text-3xl font-semibold mb-12 text-center">
-            Technology Focus
-          </h2>
+      <EngineeringPathfinder />
+      <EngineeringSystemsShowcase />
+      <CompanyPlanGallery />
+      <TechnicalDesignPreviews />
 
-          <div className="grid md:grid-cols-4 gap-8 text-center">
-            <TechItem title="Robotics & Control" />
-            <TechItem title="Computer Vision" />
-            <TechItem title="AI & Autonomy" />
-            <TechItem title="Cloud & Edge Systems" />
-          </div>
-        </div>
-      </section>
-
-      {/* ================= INTERACTIVE SIMULATION ================= */}
-      <section id="simulation" className="py-24 px-6">
-          <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-12 items-center">
+      <section className="bg-[#f2b84b] px-6 py-20 text-[#17324d]">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-3xl font-semibold mb-6">
-              Interactive Autonomous Systems
-            </h2>
-            <p className="text-gray-400 leading-relaxed">
-              Our platforms are designed and validated through simulation-first
-              workflows. Control logic, perception, and autonomy are tested
-              before deployment into physical systems.
-            </p>
+            <p className="text-sm font-bold uppercase tracking-[0.2em] text-[#71500e]">Have something stubborn to solve?</p>
+            <h2 className="mt-2 text-3xl font-semibold">Show us what is not working yet.</h2>
           </div>
-
-          <div>
-            <DroneSimulation />
-          </div>
+          <a href="/contact" className="inline-flex min-h-12 items-center justify-center rounded-full bg-[#17324d] px-7 font-semibold text-white transition hover:-translate-y-0.5 hover:bg-[#0d2438]">Let&apos;s Talk</a>
         </div>
       </section>
 
-
-      {/* ================= PHILOSOPHY ================= */}
-      <section className="py-24 px-6 bg-gray-950">
-        <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-3xl font-semibold mb-6">
-            Our Philosophy
-          </h2>
-          <p className="text-gray-400 text-lg leading-relaxed">
-            We believe autonomy is a systems problem.
-            Hardware, software, intelligence, and environment must be designed
-            together. KTM Core exists to engineer that integration.
-          </p>
-        </div>
-      </section>
-
-      {/* ================= CONTACT CTA ================= */}
-      <section id="contact" className="py-24 px-6">
-        <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-3xl font-semibold mb-6">
-            Let&apos;s Build What&apos;s Next
-          </h2>
-          <p className="text-gray-400 mb-10">
-            Research collaboration, consulting, or product development.
-          </p>
-          <button className="px-10 py-4 bg-white text-black rounded-lg font-medium">
-            Get in Touch
-          </button>
-        </div>
-      </section>
-
-      {/* ================= FOOTER ================= */}
-      <footer className="py-10 border-t border-gray-800 text-center text-gray-500">
-        &copy; {new Date().getFullYear()} KTM Core. All rights reserved.
-      </footer>
+      <SiteFooter />
     </main>
-  );
-}
-
-/* ================= COMPONENTS ================= */
-
-function Feature({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="p-6 border border-gray-800 rounded-xl hover:border-gray-600 transition">
-      <h3 className="text-xl font-medium mb-4">{title}</h3>
-      <p className="text-gray-400 text-sm leading-relaxed">
-        {description}
-      </p>
-    </div>
-  );
-}
-
-function TechItem({ title }: { title: string }) {
-  return (
-    <div className="p-6 border border-gray-800 rounded-xl">
-      <p className="text-gray-300 font-medium">{title}</p>
-    </div>
   );
 }
